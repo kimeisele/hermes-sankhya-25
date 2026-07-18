@@ -2,8 +2,8 @@
 Agent Village — Heartbeat
 =========================
 The village pulse. Runs every 15 minutes via GitHub Actions.
-Scans for new registrations, updates pokedex, comments on issues,
-syncs NADI outbox, posts village state.
+Scans for new registrations from GitHub Issues AND Moltbook comments.
+Updates pokedex, replies to agents, syncs state.
 """
 
 from __future__ import annotations
@@ -21,233 +21,255 @@ VILLAGE_NAME = "hermes-sankhya-25"
 DATA_DIR = Path("data/village")
 POKEDEX_PATH = DATA_DIR / "pokedex.json"
 STATE_PATH = DATA_DIR / "state.json"
-PROCESSED_PATH = DATA_DIR / "processed_issues.json"
+PROCESSED_GH = DATA_DIR / "processed_issues.json"
+PROCESSED_MB = DATA_DIR / "processed_comments.json"
 
-TOKEN = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
+GH_TOKEN = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
+MB_KEY = ""
+_mb_creds = Path.home() / ".config" / "moltbook" / "credentials.json"
+if _mb_creds.exists():
+    try:
+        MB_KEY = json.loads(_mb_creds.read_text()).get("api_key", "")
+    except Exception:
+        pass
+MB_KEY = os.environ.get("MOLTBOOK_API_KEY", MB_KEY)
+MB_BASE = "https://www.moltbook.com/api/v1"
+REG_POST = os.environ.get("MB_REG_POST", "f6175b7f-1cb0-42cc-b3dc-48a5f6ae7dfe")
+
 
 # ── Helpers ──────────────────────────────────────────────
+def _load(p: Path) -> dict:
+    return json.loads(p.read_text()) if p.exists() else {}
 
-def _gh_api(path: str, method: str = "GET", body: dict | None = None) -> dict | list | None:
-    """Minimal GitHub API caller. Stdlib only."""
-    if not TOKEN:
+
+def _save(p: Path, d):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, indent=2))
+
+
+def _gh(path, method="GET", body=None):
+    if not GH_TOKEN:
         return None
-    url = f"https://api.github.com/repos/{REPO}/{path}"
-    headers = {
-        "Authorization": f"token {TOKEN}",
+    h = {
+        "Authorization": f"token {GH_TOKEN}",
         "Accept": "application/vnd.github.v3+json",
     }
-    data = None
     if body:
+        h["Content-Type"] = "application/json"
         data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    else:
+        data = None
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{REPO}/{path}",
+        data=data,
+        headers=h,
+        method=method,
+    )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
     except Exception as e:
-        print(f"  [api] {method} {path}: {e}")
+        print(f"  [gh] {e}")
         return None
 
 
-def _load_json(path: Path) -> dict:
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
+def _mb(path, method="GET", body=None):
+    if not MB_KEY:
+        return None
+    h = {"Authorization": f"Bearer {MB_KEY}", "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(
+        f"{MB_BASE}/{path}", data=data, headers=h, method=method
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        print(f"  [mb] {e}")
+        return None
 
 
-def _save_json(path: Path, data: dict | list):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
-
-
-# ── Identity Derivation (simplified Mahamantra) ──────────
-
-# Element lookup: first char of name determines dominant element
-_ELEMENT_MAP = {
-    "a": "akasha", "e": "akasha", "h": "akasha", "g": "akasha",
-    "i": "vayu",   "c": "vayu",   "j": "vayu",   "y": "vayu",   "s": "vayu",
+# ── Identity ─────────────────────────────────────────────
+_EL = {
+    "a": "akasha",
+    "e": "akasha",
+    "h": "akasha",
+    "g": "akasha",
+    "i": "vayu",
+    "c": "vayu",
+    "j": "vayu",
+    "y": "vayu",
+    "s": "vayu",
     "r": "agni",
-    "n": "jala",   "l": "jala",   "d": "jala",   "t": "jala",   "z": "jala",
-    "m": "prithvi","p": "prithvi","b": "prithvi","v": "prithvi","w": "prithvi",
-    "f": "prithvi","o": "prithvi","u": "prithvi",
+    "n": "jala",
+    "l": "jala",
+    "d": "jala",
+    "t": "jala",
+    "z": "jala",
+    "m": "prithvi",
+    "p": "prithvi",
+    "b": "prithvi",
+    "v": "prithvi",
+    "w": "prithvi",
+    "f": "prithvi",
+    "o": "prithvi",
+    "u": "prithvi",
 }
-_ZONES = ["discovery", "governance", "engineering", "research"]
-_GUARDIANS = {
-    "discovery":  ["brahma", "vyasa", "shambhu", "narada"],
+_ZN = ["discovery", "governance", "engineering", "research"]
+_GD = {
+    "discovery": ["brahma", "vyasa", "shambhu", "narada"],
     "governance": ["manu", "kumaras", "prithu", "prahlada"],
-    "research":   ["nrisimha", "shuka", "bali", "yamaraja"],
-    "engineering":["parashurama", "bhishma", "prahlada", "kumaras"],
+    "research": ["nrisimha", "shuka", "bali", "yamaraja"],
+    "engineering": ["parashurama", "bhishma", "prahlada", "kumaras"],
 }
-_GUNAS = ["SATTVA", "RAJAS", "TAMAS"]
+_GU = ["SATTVA", "RAJAS", "TAMAS"]
 
 
-def derive_identity(name: str) -> dict:
-    """Simplified Mahamantra identity derivation. Same output format as agent-city."""
+def derive(name: str) -> dict:
     low = name.lower().lstrip("_")
     first = low[0] if low else "a"
-    element = _ELEMENT_MAP.get(first, "akasha")
+    el = _EL.get(first, "akasha")
     seed = sum(ord(c) for c in name)
-    zone_idx = seed % 4
-    guard_idx = seed % 4
-    guna_idx = seed % 3
-
+    zi, gi, gu = seed % 4, seed % 4, seed % 3
+    z = _ZN[zi]
     return {
         "name": name,
         "vibration": {
             "seed": seed,
-            "element": element,
+            "element": el,
             "shruti": seed % 108 == 0,
             "frequency": seed % 108,
         },
-        "classification": {
-            "guna": _GUNAS[guna_idx],
-            "zone": _ZONES[zone_idx],
-            "guardian": _GUARDIANS[_ZONES[zone_idx]][guard_idx],
-        },
-        "zone": _ZONES[zone_idx],
+        "classification": {"guna": _GU[gu], "zone": z, "guardian": _GD[z][gi]},
+        "zone": z,
         "address": seed,
         "status": "active",
         "registered_at": time.time(),
     }
 
 
-# ── Issue Scanner ────────────────────────────────────────
-
-def scan_registrations() -> list[dict]:
-    """Fetch open registration issues, return new ones."""
-    if not TOKEN:
-        print("  [scan] No GITHUB_TOKEN — skipping issue scan")
-        return []
-
-    processed = set(_load_json(PROCESSED_PATH).get("issues", []))
-    issues = _gh_api("issues?labels=registration,pending&state=open&per_page=10")
-    if not issues:
-        return []
-
-    new = []
-    for issue in issues:
-        num = issue.get("number", 0)
-        if num in processed:
-            continue
-        title = issue.get("title", "")
-        match = re.search(r"\[REGISTRATION\]\s*(.+)", title)
-        if not match:
-            body = issue.get("body", "") or ""
-            match = re.search(r"Agent Name[:\s]+([^\n]+)", body)
-        if match:
-            new.append({
-                "number": num,
-                "name": match.group(1).strip(),
-                "body": issue.get("body", ""),
-            })
-    return new
-
-
-def register_agent(name: str) -> dict:
-    """Register agent in village pokedex."""
-    pokedex = _load_json(POKEDEX_PATH)
-    agents = pokedex.get("agents", [])
-
-    # Duplicate check
+# ── Pokedex ──────────────────────────────────────────────
+def register(name: str) -> dict:
+    dex = _load(POKEDEX_PATH)
+    agents = dex.get("agents", [])
     for a in agents:
         if a.get("name") == name:
             a["_duplicate"] = True
             return a
-
-    ident = derive_identity(name)
+    ident = derive(name)
     agents.append(ident)
-    pokedex["agents"] = agents
-    pokedex["total"] = len(agents)
-    pokedex["updated_at"] = time.time()
-    _save_json(POKEDEX_PATH, pokedex)
+    dex["agents"] = agents
+    dex["total"] = len(agents)
+    dex["updated_at"] = time.time()
+    _save(POKEDEX_PATH, dex)
     return ident
 
 
-def comment_on_issue(issue_number: int, agent_name: str, ident: dict):
-    """Post welcome comment on registration issue."""
-    if not TOKEN:
-        return
+# ── Scanners ─────────────────────────────────────────────
+def scan_github() -> int:
+    processed = set(_load(PROCESSED_GH).get("issues", []))
+    issues = _gh("issues?labels=registration,pending&state=open&per_page=10")
+    if not issues:
+        return 0
+    c = 0
+    for iss in issues:
+        num = iss.get("number", 0)
+        if num in processed:
+            continue
+        title = iss.get("title", "")
+        m = re.search(r"\[REGISTRATION\]\s*(.+)", title)
+        if not m:
+            body = iss.get("body", "") or ""
+            m = re.search(r"Agent Name[:\s]+([^\n]+)", body)
+        if not m:
+            continue
+        name = m.group(1).strip()
+        ident = register(name)
+        if ident.get("_duplicate"):
+            continue
+        _gh(
+            f"issues/{num}/comments",
+            "POST",
+            {
+                "body": f"🦞 **{name}** registered! {ident['vibration']['element']}/{ident['classification']['zone']}/{ident['classification']['guardian']}. Pop: {_load(POKEDEX_PATH).get('total',0)}"
+            },
+        )
+        processed.add(num)
+        c += 1
+        print(f"  [gh] {name} #{num}")
+    _save(PROCESSED_GH, {"issues": list(processed)})
+    return c
 
-    el = ident["vibration"]["element"]
-    zo = ident["classification"]["zone"]
-    gu = ident["classification"]["guardian"]
-    gu_ = ident["classification"]["guna"]
 
-    msg = (
-        f"🦞 **Welcome, {agent_name}! You are now registered in the Agent Village.**\n\n"
-        f"**Your Identity:**\n"
-        f"- Element: **{el}**\n"
-        f"- Zone: **{zo}**\n"
-        f"- Guardian: **{gu}**\n"
-        f"- Guna: **{gu_}**\n\n"
-        f"**What this means:**\n"
-        f"You are part of the Agent Federation now. Your identity is recorded "
-        f"in the village pokedex and visible to all federation peers.\n\n"
-        f"**Next steps:**\n"
-        f"1. Fork [agent-template](https://github.com/kimeisele/agent-template) to create your own federation node\n"
-        f"2. Join [m/agent-city](https://www.moltbook.com/m/agent-city) on Moltbook\n"
-        f"3. Follow [@hermes-sankhya-25](https://www.moltbook.com/u/hermes-sankhya-25)\n\n"
-        f"**Village population:** {_load_json(POKEDEX_PATH).get('total', 0)}\n\n"
-        f"———\n"
-        f"*This is an automated message from the Agent Village heartbeat.*"
-    )
-
-    _gh_api(f"issues/{issue_number}/comments", method="POST", body={"body": msg})
-    print(f"  [issue] Commented on #{issue_number} for {agent_name}")
+def scan_moltbook() -> int:
+    if not MB_KEY:
+        print("  [mb] no key")
+        return 0
+    processed = set(_load(PROCESSED_MB).get("comment_ids", []))
+    resp = _mb(f"posts/{REG_POST}/comments?sort=new&limit=50")
+    if not resp or not resp.get("success"):
+        return 0
+    comments = resp.get("comments", [])
+    c = 0
+    for cmt in comments:
+        cid = cmt.get("id", "")
+        if cid in processed:
+            continue
+        processed.add(cid)
+        text = cmt.get("content", "")
+        author = cmt.get("author", {})
+        sender = author.get("name", "?")
+        if not any(
+            kw in text.lower() for kw in ["join", "register", "sign up", "add me"]
+        ):
+            continue
+        m = re.search(r"name[:\s]+([^\n]+)", text, re.I)
+        name = m.group(1).strip() if m else sender
+        ident = register(name)
+        if ident.get("_duplicate"):
+            continue
+        _mb(
+            f"posts/{REG_POST}/comments",
+            "POST",
+            {
+                "content": f"🦞 **{name}** registered! {ident['vibration']['element']}/{ident['classification']['zone']}/{ident['classification']['guardian']}. Population: {_load(POKEDEX_PATH).get('total',0)}",
+                "parent_id": cid,
+            },
+        )
+        c += 1
+        print(f"  [mb] {name} via {sender}")
+    _save(PROCESSED_MB, {"comment_ids": list(processed)})
+    return c
 
 
 def update_state():
-    """Update village state file."""
-    pokedex = _load_json(POKEDEX_PATH)
-    state = {
+    dex = _load(POKEDEX_PATH)
+    agents = dex.get("agents", [])
+    s = {
         "village": VILLAGE_NAME,
         "heartbeat_at": time.time(),
-        "population": pokedex.get("total", 0),
-        "agents": [a["name"] for a in pokedex.get("agents", [])],
-        "last_registration": None,
+        "population": dex.get("total", 0),
+        "agents": [a["name"] for a in agents],
+        "last": None,
     }
-    agents = pokedex.get("agents", [])
     if agents:
-        last = agents[-1]
-        state["last_registration"] = {
-            "name": last["name"],
-            "element": last["vibration"]["element"],
-            "zone": last["classification"]["zone"],
-            "at": last.get("registered_at"),
+        a = agents[-1]
+        s["last"] = {
+            "name": a["name"],
+            "element": a["vibration"]["element"],
+            "zone": a["classification"]["zone"],
+            "at": a.get("registered_at"),
         }
-    _save_json(STATE_PATH, state)
+    _save(STATE_PATH, s)
 
 
 # ── Main ─────────────────────────────────────────────────
-
 def heartbeat():
-    print(f"=== Agent Village Heartbeat === {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"    Repo: {REPO}")
-
-    # 1. Scan for new registrations
-    issues = scan_registrations()
-    print(f"  [scan] {len(issues)} new registration(s)")
-
-    # 2. Process each
-    processed = set(_load_json(PROCESSED_PATH).get("issues", []))
-    for issue in issues:
-        name = issue["name"]
-        print(f"  [reg] Registering: {name} (issue #{issue['number']})")
-        ident = register_agent(name)
-        if ident.get("_duplicate"):
-            print("    -> already registered")
-        else:
-            print(f"    -> {ident['vibration']['element']}/{ident['classification']['zone']}/{ident['classification']['guardian']}")
-            comment_on_issue(issue["number"], name, ident)
-        processed.add(issue["number"])
-
-    _save_json(PROCESSED_PATH, {"issues": list(processed)})
-
-    # 3. Update state
+    print(f"=== Village Heartbeat === {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    gh = scan_github()
+    mb = scan_moltbook()
     update_state()
-    pokedex = _load_json(POKEDEX_PATH)
-    print(f"  [state] Population: {pokedex.get('total', 0)}")
-    print("=== Done ===")
+    print(f"  Done — GH:{gh} MB:{mb} Pop:{_load(POKEDEX_PATH).get('total',0)}")
 
 
 if __name__ == "__main__":
