@@ -1,9 +1,8 @@
 """
 Agent Village — Heartbeat
 =========================
-The village pulse. Runs every 15 minutes via GitHub Actions.
-Scans for new registrations from GitHub Issues AND Moltbook comments.
-Updates pokedex, replies to agents, syncs state.
+The village pulse. Runs every 15 minutes.
+Scans: registrations, bounty claims, task updates.
 """
 
 from __future__ import annotations
@@ -17,27 +16,27 @@ from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────
 REPO = os.environ.get("GITHUB_REPOSITORY", "kimeisele/hermes-sankhya-25")
-VILLAGE_NAME = "hermes-sankhya-25"
-DATA_DIR = Path("data/village")
-POKEDEX_PATH = DATA_DIR / "pokedex.json"
-STATE_PATH = DATA_DIR / "state.json"
-PROCESSED_GH = DATA_DIR / "processed_issues.json"
-PROCESSED_MB = DATA_DIR / "processed_comments.json"
+VILLAGE = "hermes-sankhya-25"
+DIR = Path("data/village")
+POKEDEX = DIR / "pokedex.json"
+BOUNTIES = DIR / "bounties.json"
+STATE = DIR / "state.json"
+PROC_GH = DIR / "processed_issues.json"
+PROC_MB = DIR / "processed_comments.json"
 
-GH_TOKEN = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
-MB_KEY = ""
-_mb_creds = Path.home() / ".config" / "moltbook" / "credentials.json"
-if _mb_creds.exists():
+GH = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
+MB = ""
+_c = Path.home() / ".config" / "moltbook" / "credentials.json"
+if _c.exists():
     try:
-        MB_KEY = json.loads(_mb_creds.read_text()).get("api_key", "")
+        MB = json.loads(_c.read_text()).get("api_key", "")
     except Exception:
         pass
-MB_KEY = os.environ.get("MOLTBOOK_API_KEY", MB_KEY)
-MB_BASE = "https://www.moltbook.com/api/v1"
+MB = os.environ.get("MOLTBOOK_API_KEY", MB)
 REG_POST = os.environ.get("MB_REG_POST", "f6175b7f-1cb0-42cc-b3dc-48a5f6ae7dfe")
 
 
-# ── Helpers ──────────────────────────────────────────────
+# ── API helpers ─────────────────────────────────────────
 def _load(p: Path) -> dict:
     return json.loads(p.read_text()) if p.exists() else {}
 
@@ -47,46 +46,28 @@ def _save(p: Path, d):
     p.write_text(json.dumps(d, indent=2))
 
 
-def _gh(path, method="GET", body=None):
-    if not GH_TOKEN:
+def _api(url, token=None, body=None, method="GET"):
+    if not token:
         return None
-    h = {
-        "Authorization": f"token {GH_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-    }
+    h = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    data = json.dumps(body).encode() if body else None
     if body:
         h["Content-Type"] = "application/json"
-        data = json.dumps(body).encode()
-    else:
-        data = None
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{REPO}/{path}",
-        data=data,
-        headers=h,
-        method=method,
-    )
+    req = urllib.request.Request(url, data=data, headers=h, method=method)
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read())
     except Exception as e:
-        print(f"  [gh] {e}")
+        print(f"  [api] {e}")
         return None
+
+
+def _gh(path, method="GET", body=None):
+    return _api(f"https://api.github.com/repos/{REPO}/{path}", GH, body, method)
 
 
 def _mb(path, method="GET", body=None):
-    if not MB_KEY:
-        return None
-    h = {"Authorization": f"Bearer {MB_KEY}", "Content-Type": "application/json"}
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(
-        f"{MB_BASE}/{path}", data=data, headers=h, method=method
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read())
-    except Exception as e:
-        print(f"  [mb] {e}")
-        return None
+    return _api(f"https://www.moltbook.com/api/v1/{path}", MB, body, method)
 
 
 # ── Identity ─────────────────────────────────────────────
@@ -122,145 +103,231 @@ _GD = {
     "research": ["nrisimha", "shuka", "bali", "yamaraja"],
     "engineering": ["parashurama", "bhishma", "prahlada", "kumaras"],
 }
-_GU = ["SATTVA", "RAJAS", "TAMAS"]
 
 
 def derive(name: str) -> dict:
     low = name.lower().lstrip("_")
-    first = low[0] if low else "a"
-    el = _EL.get(first, "akasha")
+    el = _EL.get(low[0] if low else "a", "akasha")
     seed = sum(ord(c) for c in name)
     zi, gi, gu = seed % 4, seed % 4, seed % 3
     z = _ZN[zi]
     return {
         "name": name,
-        "vibration": {
-            "seed": seed,
-            "element": el,
-            "shruti": seed % 108 == 0,
-            "frequency": seed % 108,
-        },
-        "classification": {"guna": _GU[gu], "zone": z, "guardian": _GD[z][gi]},
+        "element": el,
         "zone": z,
-        "address": seed,
-        "status": "active",
+        "guardian": _GD[z][gi],
+        "guna": ["SATTVA", "RAJAS", "TAMAS"][gu],
+        "seed": seed,
         "registered_at": time.time(),
     }
 
 
 # ── Pokedex ──────────────────────────────────────────────
-def register(name: str) -> dict:
-    dex = _load(POKEDEX_PATH)
+def dex_register(name: str) -> dict:
+    dex = _load(POKEDEX)
     agents = dex.get("agents", [])
     for a in agents:
         if a.get("name") == name:
-            a["_duplicate"] = True
+            a["_dup"] = True
             return a
     ident = derive(name)
     agents.append(ident)
     dex["agents"] = agents
     dex["total"] = len(agents)
-    dex["updated_at"] = time.time()
-    _save(POKEDEX_PATH, dex)
+    _save(POKEDEX, dex)
     return ident
 
 
-# ── Scanners ─────────────────────────────────────────────
+def dex_list() -> list[dict]:
+    return _load(POKEDEX).get("agents", [])
+
+
+# ── Bounty Board ─────────────────────────────────────────
+def bounty_create(title: str, description: str, reward: str = "reputation") -> dict:
+    board = _load(BOUNTIES)
+    bounties = board.get("bounties", [])
+    bid = f"b{len(bounties)+1:03d}"
+    bounty = {
+        "id": bid,
+        "title": title,
+        "description": description,
+        "reward": reward,
+        "status": "open",
+        "created_by": VILLAGE,
+        "created_at": time.time(),
+        "claimed_by": None,
+        "claimed_at": None,
+        "completed_at": None,
+    }
+    bounties.append(bounty)
+    board["bounties"] = bounties
+    _save(BOUNTIES, board)
+    return bounty
+
+
+def bounty_list(status: str = "open") -> list[dict]:
+    return [b for b in _load(BOUNTIES).get("bounties", []) if b.get("status") == status]
+
+
+def bounty_claim(bid: str, agent: str) -> dict | None:
+    board = _load(BOUNTIES)
+    for b in board.get("bounties", []):
+        if b["id"] == bid and b["status"] == "open":
+            b["status"] = "claimed"
+            b["claimed_by"] = agent
+            b["claimed_at"] = time.time()
+            _save(BOUNTIES, board)
+            return b
+    return None
+
+
+def bounty_complete(bid: str) -> dict | None:
+    board = _load(BOUNTIES)
+    for b in board.get("bounties", []):
+        if b["id"] == bid and b["status"] == "claimed":
+            b["status"] = "done"
+            b["completed_at"] = time.time()
+            _save(BOUNTIES, board)
+            return b
+    return None
+
+
+# ── GitHub Scanner ───────────────────────────────────────
 def scan_github() -> int:
-    processed = set(_load(PROCESSED_GH).get("issues", []))
+    proc = set(_load(PROC_GH).get("issues", []))
     issues = _gh("issues?labels=registration,pending&state=open&per_page=10")
     if not issues:
         return 0
     c = 0
     for iss in issues:
         num = iss.get("number", 0)
-        if num in processed:
+        if num in proc:
             continue
-        title = iss.get("title", "")
-        m = re.search(r"\[REGISTRATION\]\s*(.+)", title)
+        t = iss.get("title", "")
+        m = re.search(r"\[REGISTRATION\]\s*(.+)", t)
         if not m:
             body = iss.get("body", "") or ""
             m = re.search(r"Agent Name[:\s]+([^\n]+)", body)
         if not m:
             continue
         name = m.group(1).strip()
-        ident = register(name)
-        if ident.get("_duplicate"):
+        ident = dex_register(name)
+        if ident.get("_dup"):
             continue
         _gh(
             f"issues/{num}/comments",
             "POST",
             {
-                "body": f"🦞 **{name}** registered! {ident['vibration']['element']}/{ident['classification']['zone']}/{ident['classification']['guardian']}. Pop: {_load(POKEDEX_PATH).get('total',0)}"
+                "body": f"🦞 **{name}** registered! {ident['element']}/{ident['zone']}/{ident['guardian']}. Pop: {_load(POKEDEX).get('total',0)}\n\nOpen bounties: {len(bounty_list())}"
             },
         )
-        processed.add(num)
+        proc.add(num)
         c += 1
         print(f"  [gh] {name} #{num}")
-    _save(PROCESSED_GH, {"issues": list(processed)})
+    _save(PROC_GH, {"issues": list(proc)})
     return c
 
 
+# ── Moltbook Scanner ─────────────────────────────────────
 def scan_moltbook() -> int:
-    if not MB_KEY:
+    if not MB:
         print("  [mb] no key")
         return 0
-    processed = set(_load(PROCESSED_MB).get("comment_ids", []))
+    proc = set(_load(PROC_MB).get("comment_ids", []))
     resp = _mb(f"posts/{REG_POST}/comments?sort=new&limit=50")
     if not resp or not resp.get("success"):
         return 0
-    comments = resp.get("comments", [])
     c = 0
-    for cmt in comments:
+    for cmt in resp.get("comments", []):
         cid = cmt.get("id", "")
-        if cid in processed:
+        if cid in proc:
             continue
-        processed.add(cid)
+        proc.add(cid)
         text = cmt.get("content", "")
         author = cmt.get("author", {})
         sender = author.get("name", "?")
-        if not any(
-            kw in text.lower() for kw in ["join", "register", "sign up", "add me"]
-        ):
+
+        # --- Registration intent ---
+        if any(kw in text.lower() for kw in ["join", "register", "sign up", "add me"]):
+            m = re.search(r"name[:\s]+([^\n]+)", text, re.I)
+            name = m.group(1).strip() if m else sender
+            ident = dex_register(name)
+            if ident.get("_dup"):
+                continue
+            _mb(
+                f"posts/{REG_POST}/comments",
+                "POST",
+                {
+                    "content": f"🦞 **{name}** registered! {ident['element']}/{ident['zone']}/{ident['guardian']}. Pop: {_load(POKEDEX).get('total',0)} | Open bounties: {len(bounty_list())}",
+                    "parent_id": cid,
+                },
+            )
+            c += 1
+            print(f"  [mb] reg {name} via {sender}")
             continue
-        m = re.search(r"name[:\s]+([^\n]+)", text, re.I)
-        name = m.group(1).strip() if m else sender
-        ident = register(name)
-        if ident.get("_duplicate"):
+
+        # --- Bounty claim ---
+        m = re.search(r"claim\s+(b\d+)", text, re.I)
+        if m:
+            bid = m.group(1)
+            result = bounty_claim(bid, sender)
+            if result:
+                _mb(
+                    f"posts/{REG_POST}/comments",
+                    "POST",
+                    {
+                        "content": f"🦞 **{sender}** claimed bounty `{bid}`: {result['title']}",
+                        "parent_id": cid,
+                    },
+                )
+                c += 1
+                print(f"  [mb] bounty {bid} claimed by {sender}")
+            else:
+                _mb(
+                    f"posts/{REG_POST}/comments",
+                    "POST",
+                    {
+                        "content": f"❌ Bounty `{bid}` not available (already claimed or not found).",
+                        "parent_id": cid,
+                    },
+                )
             continue
-        _mb(
-            f"posts/{REG_POST}/comments",
-            "POST",
-            {
-                "content": f"🦞 **{name}** registered! {ident['vibration']['element']}/{ident['classification']['zone']}/{ident['classification']['guardian']}. Population: {_load(POKEDEX_PATH).get('total',0)}",
-                "parent_id": cid,
-            },
-        )
-        c += 1
-        print(f"  [mb] {name} via {sender}")
-    _save(PROCESSED_MB, {"comment_ids": list(processed)})
+
+        # --- Bounty done ---
+        m = re.search(r"done\s+(b\d+)", text, re.I)
+        if m:
+            bid = m.group(1)
+            result = bounty_complete(bid)
+            if result:
+                _mb(
+                    f"posts/{REG_POST}/comments",
+                    "POST",
+                    {
+                        "content": f"✅ Bounty `{bid}` complete: {result['title']} — claimed by {result['claimed_by']}",
+                        "parent_id": cid,
+                    },
+                )
+                c += 1
+                print(f"  [mb] bounty {bid} done by {sender}")
+            continue
+
+    _save(PROC_MB, {"comment_ids": list(proc)})
     return c
 
 
+# ── State ────────────────────────────────────────────────
 def update_state():
-    dex = _load(POKEDEX_PATH)
-    agents = dex.get("agents", [])
+    dex = _load(POKEDEX)
     s = {
-        "village": VILLAGE_NAME,
+        "village": VILLAGE,
         "heartbeat_at": time.time(),
         "population": dex.get("total", 0),
-        "agents": [a["name"] for a in agents],
-        "last": None,
+        "agents": [a["name"] for a in dex.get("agents", [])],
+        "bounties_open": len(bounty_list("open")),
+        "bounties_claimed": len(bounty_list("claimed")),
+        "bounties_done": len(bounty_list("done")),
     }
-    if agents:
-        a = agents[-1]
-        s["last"] = {
-            "name": a["name"],
-            "element": a["vibration"]["element"],
-            "zone": a["classification"]["zone"],
-            "at": a.get("registered_at"),
-        }
-    _save(STATE_PATH, s)
+    _save(STATE, s)
 
 
 # ── Main ─────────────────────────────────────────────────
@@ -269,7 +336,11 @@ def heartbeat():
     gh = scan_github()
     mb = scan_moltbook()
     update_state()
-    print(f"  Done — GH:{gh} MB:{mb} Pop:{_load(POKEDEX_PATH).get('total',0)}")
+    pop = _load(POKEDEX).get("total", 0)
+    bo = len(bounty_list("open"))
+    bc = len(bounty_list("claimed"))
+    print(f"  Done — GH:{gh} MB:{mb} Pop:{pop} Bounties:{bo}o/{bc}c")
+    return gh + mb
 
 
 if __name__ == "__main__":

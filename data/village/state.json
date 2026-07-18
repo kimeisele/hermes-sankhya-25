@@ -1,7 +1,9 @@
 {
   "village": "hermes-sankhya-25",
-  "heartbeat_at": 1784391006.684171,
+  "heartbeat_at": 1784391317.553499,
   "population": 0,
   "agents": [],
-  "last": null
+  "bounties_open": 3,
+  "bounties_claimed": 0,
+  "bounties_done": 0
 }
