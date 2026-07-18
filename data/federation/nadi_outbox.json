@@ -1,26 +1,5 @@
 [
   {
-    "source": "ag_762ff6e28f1d24a6",
-    "target": "steward",
-    "operation": "federation.agent_claim",
-    "payload": {
-      "node_id": "ag_762ff6e28f1d24a6",
-      "agent_name": "hermes-sankhya-25",
-      "public_key": "b98d1691d804815a7f9b36046f93efd641318c279d38740fe81e541707cd87ed",
-      "capabilities": [
-        "authority-publishing",
-        "inquiry-response"
-      ]
-    },
-    "timestamp": 1784391956.4792423,
-    "priority": 2,
-    "correlation_id": "",
-    "ttl_s": 7200.0,
-    "id": "b30c53db-2abe-4125-8643-8233c55e4da4",
-    "payload_hash": "144092152598a68bc7563b168a85d4330bd79a2129f7e78c3623fda7c8da2740",
-    "signature": "iYwsvoqKfuqkAIoccjyZjZYilnydhr0QTFLC1ZQSaBYAbe94GmRfLANYnV8Xwy5CWQMKgCxzEeADu4NDmHClDA=="
-  },
-  {
     "source": "ag_f61ae5c4c240f2af",
     "target": "steward",
     "operation": "federation.agent_claim",
@@ -43,12 +22,33 @@
   },
   {
     "source": "ag_f61ae5c4c240f2af",
+    "target": "steward",
+    "operation": "federation.agent_claim",
+    "payload": {
+      "node_id": "ag_f61ae5c4c240f2af",
+      "agent_name": "hermes-sankhya-25",
+      "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde",
+      "capabilities": [
+        "authority-publishing",
+        "inquiry-response"
+      ]
+    },
+    "timestamp": 1784399340.2007928,
+    "priority": 2,
+    "correlation_id": "",
+    "ttl_s": 7200.0,
+    "id": "049ad4d3-38e7-4264-b46f-8d568f09aab4",
+    "payload_hash": "e8a50689da1620ff50e1d9a9db643c0efa287a9b73518549a739b2881375deb2",
+    "signature": "iRnJWTjXiGJyMePfhlBpcQfy70baGEOOktaRvoTFMBCIL7SRN3IAm18Xyz5oU3zfNK7Vg3E+4N533N65W95PAA=="
+  },
+  {
+    "source": "ag_f61ae5c4c240f2af",
     "target": "agent-internet",
     "operation": "heartbeat",
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -58,13 +58,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2894802,
+    "timestamp": 1784399340.202625,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "cbb2a86f-e2ca-4007-a1c1-044c0253c55a",
-    "payload_hash": "89879c9cc7324301a1d355673dd6defd1f50d19fc5d89ba6a19b8f16113de621",
-    "signature": "L/Z2YJlE+HST41oVXhewVtCg9sULOEpW++vWSqkd2csNEkvT0q3pBuDqjRNoOCiSfO+NTcD+GzyUsKir/BejDA=="
+    "id": "785d5534-7e47-4f71-98fb-d7920fd09f90",
+    "payload_hash": "8563beb0a4d5cc4dd5a2f63dd6b37a08f739190916e5fa25ac4eb8bc1c42059d",
+    "signature": "tl3BMqeQpfdlZ4moCrlAqRQu2Zx/cEzbhCkyy/w1TaI/HTHKtkYK7ngoFtgFc2eqS7vddU39e0ceZMfjbLbOBA=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -73,7 +73,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -83,13 +83,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2896514,
+    "timestamp": 1784399340.2028928,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "3e68f7f6-d7e4-47c1-943a-9be1b9726769",
-    "payload_hash": "26ec4b9422d51f422befa892a5a466b93c588f5f9ec7723bd721d818162be1e3",
-    "signature": "OgPcexrt+pnJ49fUvc1N4qRaGgKMj+6pJD/aytC62xJ9S+z0wc2/zIDycivYs8xyx0HD59dBpwtwTtEbaj/xCw=="
+    "id": "e2701e57-cdf6-4b2a-b83e-716669279d96",
+    "payload_hash": "6a1f6744e518592e4a161d6d5f82fd511f3500af8512d3a9878f9da534db982e",
+    "signature": "/LSN15jmf0/ZtR3FhzGnVwOBXnuA1AaKBaz364gleFjuWEXjhZnhbxUm9mno6VNafYZuQjP3n79k6IhKPupMDQ=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -98,7 +98,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -108,13 +108,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2898,
+    "timestamp": 1784399340.203049,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "2554f6f3-da45-46ad-9916-396a465ebca1",
-    "payload_hash": "a436e30375cc8c917360a3ea411bb98ce1879ad31ed32adb33437a6a9b6e349a",
-    "signature": "9Rd7G7jokmWe8Fe6HfWTN8inm/KiVo6BdYqIu1+hwdbHc7xluwrwoz+LvSRNG1DDlDgbxtJsDH17lGOuG1kYDQ=="
+    "id": "c8f294db-2f18-4425-bd62-9a16d552c6a2",
+    "payload_hash": "4958a2c97459d4d3b472baf8a2eb04238e5849c09036bae3cffe8e7cb3a6cee0",
+    "signature": "KSUxnOA9fbiLTm3tgdcIFIoT1/IDIbxuMKUB+bSWTvRZ4hI/8jffD4i/UzQBo/tDarc7i3399ROn/p6yTVMxAA=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -123,7 +123,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -133,13 +133,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2899756,
+    "timestamp": 1784399340.2031946,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "7428dd20-5dac-4639-bc10-f0b1d2a81642",
-    "payload_hash": "d7a66bbe53c9680bce312f661ce1133fc5a579e3c6ee5f9788080d4ab2d8ff19",
-    "signature": "r1BlNFr3BpmKoNTZ2CpjstKKojE5Q79N08VV2S4BpXwF7EQQzYqkiiydCZ57NUKfuLiiz44YRZnVfkFcQrIyCw=="
+    "id": "da329a7d-7152-4a20-b08e-de53340148cd",
+    "payload_hash": "f3afe72f8ef1831b6297821b8dd3e34fd67c95f7d8eebb6d80e75cdd0e101252",
+    "signature": "io7F/74mZsH9erxxacvu2UWSKI1VF3KntjsZZB837O7IcLOlSB4gacs8obCRc30QOX4SaNSJMqmNbJe/a7qrCA=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -148,7 +148,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -158,13 +158,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2901258,
+    "timestamp": 1784399340.2033331,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "7732e3ce-5157-461f-b34e-e37542df6641",
-    "payload_hash": "e6878ec0b7b721a696a91d324608b139bbbfce0685db6d8501c767809c2b606d",
-    "signature": "wVuhIjijusafcoWIJ0R8881bgZ/qnwPwK3BkHwl1gzYF6TTamsTD2m42AN3EQp9YqGZt6k5kx9PfxVMT5aJgBg=="
+    "id": "24236900-abe0-472e-99b0-f554a56e75d3",
+    "payload_hash": "5c14be90b5e1f422c304d530c405c030e4fc8cfd1bd001d43042e725f945177d",
+    "signature": "2LeG5KJ+1AIM3KhtQbp0phlPxl3M2Ifofpnhx3x+D+XMKSp034CWRlbiws+cTfr9wwZ9nmpbJ3OdbQSaHc49CQ=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -173,7 +173,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -183,13 +183,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2902653,
+    "timestamp": 1784399340.20347,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "435da977-6e59-4e65-8cb5-a68d17c0820c",
-    "payload_hash": "fc066b82c64eeedcd78302c090d0e8025451d68403a7dcac6d223c274b26cd73",
-    "signature": "uqqOnQguhIFnOGInu3I5TM8Hj7j/TyXUQvz24tBkNCZiomp89aWg6bkMURsCO9PV/nJOxmS2IEP7Cxi7rAYXCQ=="
+    "id": "f65d7db7-7920-445d-bd1e-62b446b487f4",
+    "payload_hash": "468450f3f9aae16b048d75b57383bb24c0c4470aed36de68b5cba7bc383fb53b",
+    "signature": "W00qTx9329dmDjj4vJKekU6ORNd+OVlGsZT1wwc1EGeaJ4adUn4CARxeNDQm3o9b0oyWZZ0qflzY4Fr5HPmTAg=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -198,7 +198,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -208,13 +208,13 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.290406,
+    "timestamp": 1784399340.20361,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "afdbadf6-2c97-4513-b8a4-c99d72ca0394",
-    "payload_hash": "7b4adda09ca91854ef51be346ba2432de56fc11eddc65919d075165d7b53196d",
-    "signature": "xBBzuyEcBCXATvy8hKVkRAWjPzjgY1ADQ6O2zuliA6dqy0fGO0ZFP/iQp5nETty1AdAoUUZfxc3yAL8j1IVfBw=="
+    "id": "18798bb3-8628-4f98-9948-c30029adc2af",
+    "payload_hash": "d137154c11d7782e1237e65dbcd2420b29d16e70c03d2b0e7f1e3a9e51a97225",
+    "signature": "1hm+8TwRQDo+rhQ4QvxHd7jfOobZtlRQpjCbd0CpwBj10NmCk4k2ZbqnZlX49UF1ISv1qh0miL/4pmzPdVkAAw=="
   },
   {
     "source": "ag_f61ae5c4c240f2af",
@@ -223,7 +223,7 @@
     "payload": {
       "agent_id": "hermes-sankhya-25",
       "health": 1.0,
-      "timestamp": 1784395751.2893496,
+      "timestamp": 1784399340.2025018,
       "capabilities": [
         "authority-publishing",
         "inquiry-response"
@@ -233,12 +233,12 @@
       "node_id": "ag_f61ae5c4c240f2af",
       "public_key": "db095bc19a714959ee856bc57fd877920b9931541536fc56dc6d8e0175472cde"
     },
-    "timestamp": 1784395751.2905467,
+    "timestamp": 1784399340.2037852,
     "priority": 1,
     "correlation_id": "",
     "ttl_s": 900.0,
-    "id": "c1528681-1398-4cbd-a5a7-0a612144d59e",
-    "payload_hash": "19d289da92f00423095f9fff7e9f9ea9b7c575c975ec6f221c858cf41e4d0968",
-    "signature": "gb4eNk2lqjzZstd4/2kCf+rt8JGm/1tFLAnDQs+SESrs7HbzBNk0LIPOkGWauqymEKgoVoLp1sLvlc4aqSIiBg=="
+    "id": "e337cb3f-5281-4425-8c55-f9d94b95aee4",
+    "payload_hash": "bb6513b68b5f3861b6bacc676bdb3c1dd0edd11bdbce5810768c28e8edadbdcb",
+    "signature": "de/16YXI6DfOOQsrtwvIudBVoEE/78ZVgme/RDCdsbSxpumNQL8hhsksUJzkvFhmZjQbKHrpabVObyNsKSvgBg=="
   }
 ]
