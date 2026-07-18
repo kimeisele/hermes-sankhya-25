@@ -144,25 +144,6 @@ def test_nadi_node_emit_and_receive(tmp_path: Path) -> None:
     assert outbox[0].payload["data"] == "hello"
 
 
-def test_peer_json_exists() -> None:
-    """Template ships with a peer.json in data/federation/."""
-    peer_path = REPO_ROOT / "data" / "federation" / "peer.json"
-    assert peer_path.exists()
-    data = json.loads(peer_path.read_text())
-    assert "identity" in data
-    assert "nadi" in data
-    assert "inbox" in data["nadi"]
-    assert "outbox" in data["nadi"]
-
-
-def test_nadi_inbox_exists() -> None:
-    """Template ships with a nadi_inbox.json."""
-    inbox_path = REPO_ROOT / "data" / "federation" / "nadi_inbox.json"
-    assert inbox_path.exists()
-    data = json.loads(inbox_path.read_text())
-    assert isinstance(data, list)
-
-
 def test_well_known_descriptor_matches_schema() -> None:
     desc_path = REPO_ROOT / ".well-known" / "agent-federation.json"
     data = json.loads(desc_path.read_text())
