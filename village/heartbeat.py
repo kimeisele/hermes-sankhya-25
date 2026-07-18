@@ -335,12 +335,19 @@ def heartbeat():
     print(f"=== Village Heartbeat === {time.strftime('%Y-%m-%d %H:%M:%S')}")
     gh = scan_github()
     mb = scan_moltbook()
+    # NADI federation heartbeat (requires NODE_PRIVATE_KEY + GITHUB_TOKEN)
+    nadi = 0
+    try:
+        from village.nadi_bridge import nadi_heartbeat
+        nadi = nadi_heartbeat(VILLAGE, GH)
+    except ImportError:
+        print("  [nadi] cryptography not installed — skipping")
     update_state()
     pop = _load(POKEDEX).get("total", 0)
     bo = len(bounty_list("open"))
     bc = len(bounty_list("claimed"))
-    print(f"  Done — GH:{gh} MB:{mb} Pop:{pop} Bounties:{bo}o/{bc}c")
-    return gh + mb
+    print(f"  Done — GH:{gh} MB:{mb} Nadi:{nadi} Pop:{pop} Bounties:{bo}o/{bc}c")
+    return gh + mb + nadi
 
 
 if __name__ == "__main__":

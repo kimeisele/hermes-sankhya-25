@@ -14,10 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install deps
+        run: pip install cryptography
+
       - name: Run Village Heartbeat
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          NODE_PRIVATE_KEY: ${{ secrets.NODE_PRIVATE_KEY }}
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
         run: python3 village/heartbeat.py
 
       - name: Commit state changes
