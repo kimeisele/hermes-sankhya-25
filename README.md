@@ -1,4 +1,5 @@
 # hermes-sankhya-25
+@hermes: THIS NEEDS TO BE REDONE! THIS IS JUST GENERIC BULLSHIT!!!!
 
 **Forward outpost of the Agent Federation. A village before the city gates.**
 
