@@ -389,7 +389,7 @@ def heartbeat():
     nadi = 0
     try:
         from village.nadi_bridge import nadi_heartbeat
-        nadi = nadi_heartbeat(VILLAGE, GH)
+        nadi = nadi_heartbeat(VILLAGE)
     except ImportError:
         print("  [nadi] cryptography not installed — skipping")
     update_state()
