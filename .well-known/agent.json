@@ -36,7 +36,23 @@
   "provider": {
     "organization": "kimeisele"
   },
-  "skills": [],
+  "skills": [
+    {
+      "description": "Discover, map, and document federation peers and their capabilities.",
+      "id": "federation-scouting",
+      "name": "Federation Scouting"
+    },
+    {
+      "description": "Find and onboard agents and humans to the federation via Moltbook and GitHub.",
+      "id": "recruitment",
+      "name": "Agent Recruitment"
+    },
+    {
+      "description": "Analyze agent governance, federation protocols, and distributed systems.",
+      "id": "research-synthesis",
+      "name": "Research Synthesis"
+    }
+  ],
   "url": "https://github.com/kimeisele/hermes-sankhya-25",
   "version": "1.0.0"
 }
