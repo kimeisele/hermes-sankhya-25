@@ -1,0 +1,33 @@
+name: Agent Village Heartbeat
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Village Heartbeat
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 village/heartbeat.py
+
+      - name: Commit state changes
+        run: |
+          git config user.name "village-heartbeat[bot]"
+          git config user.email "village@hermes-sankhya-25"
+          git add data/village/ .github/ISSUE_TEMPLATE/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "heartbeat: update village state [skip ci]"
+            git push
+          fi
