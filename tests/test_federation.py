@@ -36,7 +36,7 @@ def test_render_agent_card(tmp_path: Path) -> None:
     result = _run_script("render_agent_card.py", "--output", str(out))
     assert result.returncode == 0, result.stderr
     data = json.loads(out.read_text())
-    assert data["name"] == "Agent Template"
+    assert data["name"] == "Hermes Sankhya 25"
     assert "skills" in data
     assert "federation" in data
 

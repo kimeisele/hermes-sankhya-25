@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -236,7 +235,7 @@ def heartbeat():
         print(f"  [reg] Registering: {name} (issue #{issue['number']})")
         ident = register_agent(name)
         if ident.get("_duplicate"):
-            print(f"    -> already registered")
+            print("    -> already registered")
         else:
             print(f"    -> {ident['vibration']['element']}/{ident['classification']['zone']}/{ident['classification']['guardian']}")
             comment_on_issue(issue["number"], name, ident)
