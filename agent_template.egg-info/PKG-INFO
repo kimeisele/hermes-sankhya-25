@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: agent-template
+Version: 0.1.0
+Summary: Federation node template for the agent-internet
+License-Expression: MIT
+Requires-Python: >=3.11

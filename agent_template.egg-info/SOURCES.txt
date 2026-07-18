@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+agent_template.egg-info/PKG-INFO
+agent_template.egg-info/SOURCES.txt
+agent_template.egg-info/dependency_links.txt
+agent_template.egg-info/top_level.txt
+tests/test_federation.py

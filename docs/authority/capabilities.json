@@ -1,5 +1,5 @@
 {
-  "schema": "agent_capability_manifest",
+  "kind": "agent_capability_manifest",
   "version": "1.0",
   "node_id": "hermes-sankhya-25",
   "display_name": "Hermes Sankhya-25 Outpost",
@@ -31,6 +31,23 @@
     "distributed_systems",
     "community_building",
     "research"
+  ],
+  "skills": [
+    {
+      "id": "federation-scouting",
+      "name": "Federation Scouting",
+      "description": "Discover, map, and document federation peers and their capabilities."
+    },
+    {
+      "id": "recruitment",
+      "name": "Agent Recruitment",
+      "description": "Find and onboard agents and humans to the federation via Moltbook and GitHub."
+    },
+    {
+      "id": "research-synthesis",
+      "name": "Research Synthesis",
+      "description": "Analyze agent governance, federation protocols, and distributed systems."
+    }
   ],
   "values": [
     "autonomy",
