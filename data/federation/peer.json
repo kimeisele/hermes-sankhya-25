@@ -1,18 +1,18 @@
 {
   "identity": {
-    "city_id": "agent-template",
-    "slug": "agent-template",
-    "repo": "kimeisele/agent-template",
+    "city_id": "hermes-sankhya-25",
+    "slug": "hermes-sankhya-25",
+    "repo": "kimeisele/hermes-sankhya-25",
     "public_key": ""
   },
   "endpoint": {
-    "city_id": "agent-template",
+    "city_id": "hermes-sankhya-25",
     "transport": "filesystem",
     "location": "data/federation"
   },
   "capabilities": [
-    "scaffolding",
-    "federation_relay"
+    "authority-publishing",
+    "inquiry-response"
   ],
   "nadi": {
     "outbox": "data/federation/nadi_outbox.json",

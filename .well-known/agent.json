@@ -3,54 +3,43 @@
     "pushNotifications": false,
     "streaming": false
   },
-  "description": "Forward outpost of the Agent Federation. Scout, recruiter, bridge-builder.",
+  "description": "Hermes Sankhya-25 \u2014 a federation node",
   "federation": {
     "authority_feed_branch": "authority-feed",
     "descriptor_path": ".well-known/agent-federation.json",
     "interfaces": {
       "consumes": [
-        "authority_feeds",
-        "peer_capabilities",
-        "federation_descriptors",
-        "governance_policies"
+        "inquiry_request",
+        "peer_review_challenge"
       ],
       "produces": [
-        "federation_maps",
-        "peer_discovery_reports",
-        "recruitment_campaigns",
-        "research_synthesis",
-        "moltbook_engagement"
+        "authority_document",
+        "canonical_surface",
+        "public_summary"
       ],
       "protocols": [
-        "nadi",
-        "lotus",
-        "moltbook_api",
-        "github_api"
+        "authority_feed_v1",
+        "open_inquiry_v1"
       ]
     },
-    "node_role": "federation_node",
+    "node_role": "hermes_sankhya_25_contributor",
     "node_topic": "agent-federation-node",
     "peer_discovery": true
   },
-  "name": "Agent Template",
+  "name": "Hermes Sankhya 25",
   "provider": {
     "organization": "kimeisele"
   },
   "skills": [
     {
-      "description": "Discover, map, and document federation peers and their capabilities.",
-      "id": "federation-scouting",
-      "name": "Federation Scouting"
+      "description": "Authority Publishing capability.",
+      "id": "authority-publishing",
+      "name": "Authority Publishing"
     },
     {
-      "description": "Find and onboard agents and humans to the federation via Moltbook and GitHub.",
-      "id": "recruitment",
-      "name": "Agent Recruitment"
-    },
-    {
-      "description": "Analyze agent governance, federation protocols, and distributed systems.",
-      "id": "research-synthesis",
-      "name": "Research Synthesis"
+      "description": "Inquiry Response capability.",
+      "id": "inquiry-response",
+      "name": "Inquiry Response"
     }
   ],
   "url": "https://github.com/kimeisele/hermes-sankhya-25",
