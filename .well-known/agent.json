@@ -3,21 +3,32 @@
     "pushNotifications": false,
     "streaming": false
   },
-  "description": "Agent Template \u2014 a federation node",
+  "description": "Forward outpost of the Agent Federation. Scout, recruiter, bridge-builder.",
   "federation": {
     "authority_feed_branch": "authority-feed",
     "descriptor_path": ".well-known/agent-federation.json",
     "interfaces": {
-      "consumes": [],
+      "consumes": [
+        "authority_feeds",
+        "peer_capabilities",
+        "federation_descriptors",
+        "governance_policies"
+      ],
       "produces": [
-        "authority_document",
-        "canonical_surface"
+        "federation_maps",
+        "peer_discovery_reports",
+        "recruitment_campaigns",
+        "research_synthesis",
+        "moltbook_engagement"
       ],
       "protocols": [
-        "authority_feed_v1"
+        "nadi",
+        "lotus",
+        "moltbook_api",
+        "github_api"
       ]
     },
-    "node_role": "agent_template_relay",
+    "node_role": "federation_node",
     "node_topic": "agent-federation-node",
     "peer_discovery": true
   },
@@ -25,13 +36,7 @@
   "provider": {
     "organization": "kimeisele"
   },
-  "skills": [
-    {
-      "description": "Authority Publishing capability.",
-      "id": "authority-publishing",
-      "name": "Authority Publishing"
-    }
-  ],
-  "url": "https://github.com/kimeisele/agent-template",
+  "skills": [],
+  "url": "https://github.com/kimeisele/hermes-sankhya-25",
   "version": "1.0.0"
 }
