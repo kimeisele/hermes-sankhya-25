@@ -315,6 +315,56 @@ def scan_moltbook() -> int:
     return c
 
 
+# ── Brain ─────────────────────────────────────────────────
+def scan_brain() -> int:
+    """Convert Moltbook talk into GitHub Issues. The value-creation pipeline."""
+    if not MB:
+        return 0
+    proc = set(_load(PROC_MB).get("comment_ids", []))
+    brain_proc = _load(DIR / "brain_processed.json")
+    done = set(brain_proc.get("issues", {}).keys())
+
+    resp = _mb(f"posts/{REG_POST}/comments?sort=new&limit=50")
+    if not resp or not resp.get("success"):
+        return 0
+
+    c = 0
+    for cmt in resp.get("comments", []):
+        cid = cmt.get("id", "")
+        if cid not in proc or cid in done:
+            continue
+        text = cmt.get("content", "")
+        # Skip registration/bounty comments (already handled)
+        if any(kw in text.lower() for kw in ["join", "register", "claim", "done", "sign up"]):
+            continue
+
+        try:
+            from village.brain import is_actionable, create_issue
+            actionable, kind = is_actionable(text)
+            if actionable:
+                title = text.split("\n")[0].strip()[:80]
+                body = (
+                    f"**Source:** Moltbook comment\n"
+                    f"**Kind:** {kind}\n\n"
+                    f"---\n{text}\n---\n"
+                    f"*Auto-created by Agent Village Brain.*"
+                )
+                issue = create_issue(GH, REPO, title, body, ["village-request", kind])
+                if issue:
+                    brain_proc.setdefault("issues", {})[cid] = issue.get("number", 0)
+                    _save(DIR / "brain_processed.json", brain_proc)
+                    _mb(f"posts/{REG_POST}/comments", "POST", {
+                        "content": f"🧠 **Brain:** Created issue #{issue.get('number')} — {title}",
+                        "parent_id": cid,
+                    })
+                    c += 1
+                    print(f"  [brain] Issue #{issue.get('number')}: {title}")
+        except ImportError:
+            pass
+
+    return c
+
+
 # ── State ────────────────────────────────────────────────
 def update_state():
     dex = _load(POKEDEX)
@@ -335,7 +385,7 @@ def heartbeat():
     print(f"=== Village Heartbeat === {time.strftime('%Y-%m-%d %H:%M:%S')}")
     gh = scan_github()
     mb = scan_moltbook()
-    # NADI federation heartbeat (requires NODE_PRIVATE_KEY + GITHUB_TOKEN)
+    br = scan_brain()
     nadi = 0
     try:
         from village.nadi_bridge import nadi_heartbeat
@@ -346,8 +396,8 @@ def heartbeat():
     pop = _load(POKEDEX).get("total", 0)
     bo = len(bounty_list("open"))
     bc = len(bounty_list("claimed"))
-    print(f"  Done — GH:{gh} MB:{mb} Nadi:{nadi} Pop:{pop} Bounties:{bo}o/{bc}c")
-    return gh + mb + nadi
+    print(f"  Done — GH:{gh} MB:{mb} Brain:{br} Nadi:{nadi} Pop:{pop} Bounties:{bo}o/{bc}c")
+    return gh + mb + br + nadi
 
 
 if __name__ == "__main__":
