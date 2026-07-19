@@ -1,0 +1,30 @@
+{
+  "artifacts": {
+    ".authority-exports/canonical-surface.json": {
+      "path": "bundles/307b10f0bed489e564d1de1fb696ce0fff3a4aef/.authority-exports/canonical-surface.json",
+      "sha256": "6df7b58209ab96ce40bc6588c50843b79c0a91355a99e6ca052b77921f178a9f"
+    },
+    ".authority-exports/public-summary-registry.json": {
+      "path": "bundles/307b10f0bed489e564d1de1fb696ce0fff3a4aef/.authority-exports/public-summary-registry.json",
+      "sha256": "d74ae3011b08264d8de9ae9373d60737bf0fd6d0ee8b2b7cb8dad3e7825cd00c"
+    },
+    ".authority-exports/source-surface-registry.json": {
+      "path": "bundles/307b10f0bed489e564d1de1fb696ce0fff3a4aef/.authority-exports/source-surface-registry.json",
+      "sha256": "58597e54f5e07bddae7ec8e21712af1dc174722babd11df56875ca6a950faecd"
+    },
+    ".authority-exports/surface-metadata.json": {
+      "path": "bundles/307b10f0bed489e564d1de1fb696ce0fff3a4aef/.authority-exports/surface-metadata.json",
+      "sha256": "d049cc7cd7b95eebf1d218ef61e763f06492ffb83f89c394db5c0fa6a42377d9"
+    }
+  },
+  "bundle": {
+    "kind": "source_authority_bundle",
+    "path": "bundles/307b10f0bed489e564d1de1fb696ce0fff3a4aef/source-authority-bundle.json",
+    "sha256": "9ba505b0e71252ce00f1fdeb5a622313266ca5e82f71246456865e7e7a9a33b3"
+  },
+  "contract_version": 1,
+  "generated_at": 0.0,
+  "kind": "source_authority_feed_manifest",
+  "source_repo_id": "hermes-sankhya-25",
+  "source_sha": "307b10f0bed489e564d1de1fb696ce0fff3a4aef"
+}
