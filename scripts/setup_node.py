@@ -5,10 +5,14 @@ Two phases:
   Phase 1 — Identity: configure your node locally (charter, capabilities, descriptors)
   Phase 2 — Connect: choose your Agent City zone, discover peers, verify readiness
 
+Branch governance is evaluated after the two phases.  Apply with
+``--apply-governance`` or interactively.
+
 Usage:
     python scripts/setup_node.py
     python scripts/setup_node.py --non-interactive --name "My Node" --role research
     python scripts/setup_node.py --status
+    python scripts/setup_node.py --apply-governance
 """
 from __future__ import annotations
 
@@ -17,6 +21,20 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+
+# Add scripts/ to path so governance can import federation_utils
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+from governance._models import (  # noqa: E402
+    BypassState,
+    ComplianceStatus,
+    Diagnostic,
+    GovernanceCheck,
+)
+from governance._protection import ensure_governance_baseline, inspect_governance  # noqa: E402
+from governance._repo import detect_repository  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -397,7 +415,7 @@ def interactive_setup() -> dict:
     }
 
 
-def apply_config(config: dict) -> None:
+def apply_config(config: dict, *, apply_governance: bool = False) -> int:
     tier = TIERS[config["tier"]]
     zone = CITY_ZONES.get(config.get("city_zone", ""), {})
 
@@ -459,23 +477,126 @@ def apply_config(config: dict) -> None:
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
     print(f"    {GREEN}✓{RESET} .federation-setup.json (re-run anytime)")
 
+    # ── Governance: branch protection baseline ──
+    governance_exit = _run_governance_step(config, apply_governance=apply_governance)
+
     # Agent City registration guidance
     print(f"\n{BOLD}── Agent City Registration ──{RESET}\n")
     if zone:
         print(f"  Your node belongs in the {GREEN}{zone['name']}{RESET} zone ({zone['element']}).")
-    print(f"  Register manually when ready:")
+    print("  Register manually when ready:")
     print(f"    {CYAN}https://github.com/{AGENT_CITY_REPO}/issues/new?template=agent-registration.yml{RESET}")
 
     # Next steps
-    print(f"\n{BOLD}── Ready ──{RESET}\n")
+    print(f"\n{BOLD}── Next Steps ──{RESET}\n")
     print(f"  1. Review your charter:  {CYAN}docs/authority/charter.md{RESET}")
-    print(f"  2. Push to GitHub:       {CYAN}git add -A && git commit -m 'Initialize federation node' && git push{RESET}")
-    print(f"  3. Add the topic:        {CYAN}gh repo edit --add-topic agent-federation-node{RESET}")
-    print(f"  4. Register with city:   {CYAN}(link above){RESET}")
-    print(f"  5. Start NADI daemon:    {CYAN}python scripts/nadi_daemon.py --once{RESET}")
-    print(f"  6. Send a message:       {CYAN}python scripts/nadi_send.py --to agent-internet --op heartbeat{RESET}")
+    print(f"  2. Create setup branch:  {CYAN}git checkout -b setup-federation-node{RESET}")
+    print(f"  3. Commit files:         {CYAN}git add -A && git commit -m 'Initialize federation node'{RESET}")
+    print(f"  4. Push branch:          {CYAN}git push -u origin setup-federation-node{RESET}")
+    print(f"  5. Open Pull Request:    {CYAN}(PR from setup-federation-node → {config.get('repo_name', 'main')}){RESET}")
+    print(f"  6. Add the topic:        {CYAN}gh repo edit --add-topic agent-federation-node{RESET}")
+    print(f"  7. Register with city:   {CYAN}(link above){RESET}")
+    print("  8. Review + merge PR")
+    print(f"  9. Start NADI daemon:    {CYAN}python scripts/nadi_daemon.py --once{RESET}")
+    print(f" 10. Send a message:       {CYAN}python scripts/nadi_send.py --to agent-internet --op heartbeat{RESET}")
     print(f"\n  Re-run: {CYAN}python scripts/setup_node.py{RESET}  |  Status: {CYAN}python scripts/setup_node.py --status{RESET}")
+    print(f"  Apply governance: {CYAN}python scripts/setup_node.py --apply-governance{RESET}")
     print()
+    return governance_exit
+
+
+def _run_governance_step(config: dict, *, apply_governance: bool) -> ComplianceStatus:
+    """Run the governance inspection and optionally apply the baseline.
+
+    Returns the final ComplianceStatus for exit-code decisions.
+    """
+    print(f"\n{BOLD}── Governance: Branch Protection Baseline ──{RESET}\n")
+
+    repo, diag = detect_repository(REPO_ROOT)
+    if repo is None:
+        _print_governance_diag(diag)
+        return ComplianceStatus.UNKNOWN
+
+    print(f"  Repository:     {repo.full_name}")
+    print(f"  Default Branch: {repo.default_branch}")
+
+    check = inspect_governance(repo)
+    _print_governance_check(check)
+
+    if check.compliance == ComplianceStatus.CONFORMANT:
+        return ComplianceStatus.CONFORMANT
+
+    if not apply_governance:
+        # Interactive: ask for confirmation if non-conformant
+        if check.compliance == ComplianceStatus.NON_CONFORMANT:
+            print("\n  The federation-baseline ruleset is not yet active on this repository.")
+            if _ask_yn("  Create the 'agent-federation-baseline-v1' ruleset now?", default=True):
+                apply_governance = True
+            else:
+                print(f"\n  {YELLOW}Skipped. Run with --apply-governance to set up later.{RESET}")
+                return check.compliance
+        else:
+            return check.compliance
+
+    if not apply_governance:
+        return check.compliance
+
+    # Apply governance
+    print("\n  Applying federation-baseline ruleset...")
+    result = ensure_governance_baseline(repo, check)
+    print(f"  Action: {GREEN}{result.action or 'none'}{RESET}")
+
+    if result.final_check is not None:
+        print()
+        _print_governance_check(result.final_check)
+        return result.final_check.compliance
+
+    if result.action is None:
+        print(f"\n  {YELLOW}Could not apply baseline. See details above.{RESET}")
+        return ComplianceStatus.UNKNOWN
+
+    return check.compliance
+
+
+def _print_governance_check(check: GovernanceCheck) -> None:
+    """Display a GovernanceCheck result to the user."""
+    status_map = {
+        ComplianceStatus.CONFORMANT: f"{GREEN}conformant{RESET}",
+        ComplianceStatus.NON_CONFORMANT: f"{YELLOW}non-conformant{RESET}",
+        ComplianceStatus.UNKNOWN: f"{YELLOW}unknown{RESET}",
+    }
+    print(f"  Compliance:      {status_map[check.compliance]}")
+
+    if check.present_rules:
+        print(f"  Present rules:   {', '.join(check.present_rules)}")
+    if check.missing_rules:
+        print(f"  Missing rules:   {YELLOW}{', '.join(check.missing_rules)}{RESET}")
+    if check.unknown_rules:
+        print(f"  Unknown rules:   {YELLOW}{', '.join(check.unknown_rules)}{RESET}")
+
+    bypass_map = {
+        BypassState.NONE_CONFIRMED: f"{GREEN}none confirmed{RESET}",
+        BypassState.PRESENT: f"{YELLOW}present{RESET}",
+        BypassState.UNKNOWN: f"{YELLOW}unknown{RESET}",
+    }
+    print(f"  Bypass actors:   {bypass_map[check.bypass_state]}")
+
+    for detail in check.details:
+        print(f"  {DIM}{detail}{RESET}")
+
+    for d in check.diagnostics:
+        print(f"  {YELLOW}Diagnostic: {d.value}{RESET}")
+
+
+def _print_governance_diag(diag: Diagnostic) -> None:
+    """Display a repository-detection diagnostic."""
+    messages = {
+        Diagnostic.REPO_NOT_FOUND: "No GitHub repository detected from git remote.",
+        Diagnostic.AUTH_MISSING: "GitHub authentication missing. Set GITHUB_TOKEN, GH_TOKEN, or run 'gh auth login'.",
+        Diagnostic.GITHUB_UNREACHABLE: "Could not reach GitHub API. Check network connectivity.",
+    }
+    msg = messages.get(diag, f"Could not evaluate governance: {diag.value}")
+    print(f"  {YELLOW}{msg}{RESET}")
 
 
 def show_status() -> None:
@@ -496,7 +617,7 @@ def show_status() -> None:
         print(f"  Zone:  {zone['name']} ({zone['element']})")
 
     # Peer check
-    result = subprocess.run(
+    _ = subprocess.run(
         [sys.executable, "scripts/discover_federation_peers.py", "--seeds-only",
          "--output", ".federation/peers.json"],
         cwd=str(REPO_ROOT), capture_output=True, text=True,
@@ -507,13 +628,28 @@ def show_status() -> None:
         count = peers.get("peer_count", 0)
         print(f"  Peers: {GREEN}{count} reachable{RESET}")
 
+    # Governance status
+    print(f"\n{BOLD}── Governance: Branch Protection ──{RESET}\n")
+    repo, diag = detect_repository(REPO_ROOT)
+    if repo is None:
+        _print_governance_diag(diag)
+        print()
+        return
+
+    print(f"  Repository:     {repo.full_name}")
+    print(f"  Default Branch: {repo.default_branch}")
+    check = inspect_governance(repo)
+    _print_governance_check(check)
+
     print()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive federation node setup")
     parser.add_argument("--non-interactive", action="store_true")
-    parser.add_argument("--status", action="store_true", help="Show federation connection status")
+    parser.add_argument("--status", action="store_true", help="Show federation and governance status")
+    parser.add_argument("--apply-governance", action="store_true",
+                        help="Apply federation branch-protection baseline (can be used alone or with --non-interactive)")
     parser.add_argument("--name", default="My Federation Node")
     parser.add_argument("--role", default="relay", choices=list(TIERS.keys()))
     parser.add_argument("--org", default="kimeisele")
@@ -521,10 +657,29 @@ def main() -> int:
     parser.add_argument("--description", default="")
     args = parser.parse_args()
 
+    # ── --status: read-only inspection ──
     if args.status:
         show_status()
-        return 0
+        # Exit code encodes governance compliance (spec §9.2)
+        repo, _diag = detect_repository(REPO_ROOT)
+        if repo is not None:
+            check = inspect_governance(repo)
+            if check.compliance == ComplianceStatus.CONFORMANT:
+                return 0
+            if check.compliance == ComplianceStatus.NON_CONFORMANT:
+                return 1
+            return 2
+        return 2  # UNKNOWN — repo not detectable
 
+    # ── --apply-governance alone: targeted governance run ──
+    if args.apply_governance and not args.non_interactive and not any([
+        args.name != "My Federation Node", args.role != "relay",
+        args.org != "kimeisele", args.zone != "", args.description != "",
+    ]):
+        # Standalone governance run — load repo info from saved config
+        return _run_governance_standalone()
+
+    # ── Normal setup flow ──
     if args.non_interactive:
         repo_name = args.name.lower().replace(" ", "-")
         config = {
@@ -542,7 +697,49 @@ def main() -> int:
     else:
         config = interactive_setup()
 
-    apply_config(config)
+    governance_exit = apply_config(config, apply_governance=args.apply_governance)
+    if args.apply_governance:
+        # With explicit --apply-governance, exit code reflects governance result
+        return governance_exit
+    return 0
+
+
+def _run_governance_standalone() -> int:
+    """Run only the governance step (--apply-governance without setup).
+
+    Reads repository information from .federation-setup.json.
+    """
+    config_path = REPO_ROOT / ".federation-setup.json"
+    if not config_path.exists():
+        print(f"  {YELLOW}No setup config found. Run: python scripts/setup_node.py{RESET}")
+        return 2
+    _ = json.loads(config_path.read_text())
+    repo, diag = detect_repository(REPO_ROOT)
+    if repo is None:
+        _print_governance_diag(diag)
+        return 2
+    print(f"\n{BOLD}── Governance: Branch Protection Baseline ──{RESET}\n")
+    print(f"  Repository:     {repo.full_name}")
+    print(f"  Default Branch: {repo.default_branch}")
+    check = inspect_governance(repo)
+    _print_governance_check(check)
+    if check.compliance == ComplianceStatus.CONFORMANT:
+        print(f"\n  {GREEN}Already conformant — nothing to do.{RESET}")
+        return 0
+    print("\n  Applying federation-baseline ruleset...")
+    result = ensure_governance_baseline(repo, check)
+    print(f"  Action: {GREEN}{result.action or 'none'}{RESET}")
+    if result.final_check is not None:
+        print()
+        _print_governance_check(result.final_check)
+        if result.final_check.compliance == ComplianceStatus.CONFORMANT:
+            print(f"\n  {GREEN}Governance baseline applied successfully.{RESET}")
+            return 0
+        print(f"\n  {YELLOW}Re-read did not confirm compliance.{RESET}")
+        return 1
+    if result.action is None:
+        print(f"\n  {YELLOW}Could not apply baseline — see diagnostics above.{RESET}")
+        return 2
     return 0
 
 
