@@ -1,8 +1,11 @@
 {
   "authority_feed_manifest_url": "https://raw.githubusercontent.com/kimeisele/hermes-sankhya-25/authority-feed/latest-authority-manifest.json",
   "capabilities": [
-    "authority-publishing",
-    "inquiry-response"
+    "external-signal-collection",
+    "structured-inquiry",
+    "evidence-triage",
+    "cross-agent-synthesis",
+    "public-discussion-engagement"
   ],
   "display_name": "Hermes Sankhya 25",
   "endpoints": {

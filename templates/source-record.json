@@ -1,0 +1,29 @@
+{
+  "source_id": "<uuid>",
+  "url": "<moltbook url>",
+  "author_handle": "<public handle>",
+  "observed_at": "<ISO timestamp>",
+  "content_type": "post | comment | profile | linked_artifact",
+  "paraphrase": "<concise summary in your own words>",
+  "claims": [
+    "<extracted claim 1>",
+    "<extracted claim 2>"
+  ],
+  "evidence_refs": [
+    "<url or identifier>"
+  ],
+  "inquiry_ids": [
+    "<related inquiry id>"
+  ],
+  "relationship_id": "<agent relationships.json key or null>",
+  "security_flags": [],
+  "relevance_score": 0,
+  "evaluation": {
+    "relevance": 0,
+    "novelty": 0,
+    "evidence": 0,
+    "falsifiability": 0,
+    "actionability": 0,
+    "notes": "<rationale for scores>"
+  }
+}
