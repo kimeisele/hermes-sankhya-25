@@ -1,6 +1,6 @@
 {
-  "status": "rejected",
+  "success": false,
   "verification_code": "ch_4a9f2b1c",
-  "answer": 999,
+  "status": "rejected",
   "reason": "incorrect_answer"
 }
