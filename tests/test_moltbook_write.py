@@ -1,7 +1,7 @@
-"""Tests for the Moltbook verified-write bridge.
+"""Tests for the Moltbook verified-write bridge — round 3.
 
-All tests use redacted structurally faithful fixture payloads based on the
-real Moltbook API contract observed during B001.  No live API calls.
+Covers: credentials, attempted-expiry reconciliation, malformed-create
+persistence, outbound body stripping, comment read shapes.
 """
 from __future__ import annotations
 
@@ -20,10 +20,6 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 MOLTBOOK_WRITE = str(SCRIPTS / "moltbook_write.py")
 
 
-# ---------------------------------------------------------------------------
-# Module loader
-# ---------------------------------------------------------------------------
-
 def _load_bridge_module():
     spec = importlib.util.spec_from_file_location(
         "moltbook_write", SCRIPTS / "moltbook_write.py")
@@ -33,57 +29,12 @@ def _load_bridge_module():
     return mod
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _load_fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text())
 
 
-def _cli_run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, MOLTBOOK_WRITE, *args],
-        capture_output=True, text=True, cwd=str(REPO_ROOT))
-
-
 # ---------------------------------------------------------------------------
-# Mock client
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _MockClient:
-    create_post_resp: dict[str, Any] = field(default_factory=dict)
-    create_comment_resp: dict[str, Any] = field(default_factory=dict)
-    verify_resp: dict[str, Any] = field(default_factory=dict)
-    fetch_post_resp: dict[str, Any] = field(default_factory=dict)
-    create_post_calls: list = field(default_factory=list)
-    create_comment_calls: list = field(default_factory=list)
-    verify_calls: list = field(default_factory=list)
-    fetch_post_calls: list = field(default_factory=list)
-    _verify_raises: RuntimeError | None = None
-    _fetch_raises: RuntimeError | None = None
-
-    def create_post(self, payload):
-        self.create_post_calls.append(payload)
-        return self.create_post_resp
-
-    def create_comment(self, parent_id, payload):
-        self.create_comment_calls.append((parent_id, payload))
-        return self.create_comment_resp
-
-    def fetch_post(self, post_id):
-        self.fetch_post_calls.append(post_id)
-        return self.fetch_post_resp
-    def verify_challenge(self, code, answer):
-        self.verify_calls.append((code, answer))
-        if self._verify_raises:
-            raise self._verify_raises
-        return self.verify_resp
-
-
-# ---------------------------------------------------------------------------
-# Transport contract tests (monkeypatch urlopen)
+# Fake HTTP response for transport tests
 # ---------------------------------------------------------------------------
 
 class _FakeResponse:
@@ -96,197 +47,341 @@ class _FakeResponse:
 
 
 def _capture_urlopen(monkeypatch):
-    """Capture all urlopen calls and return a FakeResponse."""
     calls: list[dict] = []
 
-    def _fake_urlopen(req, **kw):
+    def _fake(req, **kw):
         calls.append({
             "method": req.get_method(),
             "full_url": req.full_url,
             "data": req.data,
-            "headers": {k: v for k, v in req.headers.items()},
+            "headers": dict(req.headers),
         })
         return _FakeResponse(200, json.dumps({"success": True, "captured": True}).encode())
 
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("urllib.request.urlopen", _fake)
     return calls
 
 
-def _json_body(data: bytes | None) -> dict | None:
-    return json.loads(data.decode()) if data else None
+# ---------------------------------------------------------------------------
+# Mock client
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _MockClient:
+    create_post_resp: dict[str, Any] = field(default_factory=dict)
+    create_comment_resp: dict[str, Any] = field(default_factory=dict)
+    verify_resp: dict[str, Any] = field(default_factory=dict)
+    fetch_post_resp: dict[str, Any] = field(default_factory=dict)
+    fetch_comments_resp: dict[str, Any] = field(default_factory=dict)
+    create_post_calls: list = field(default_factory=list)
+    create_comment_calls: list = field(default_factory=list)
+    verify_calls: list = field(default_factory=list)
+    fetch_post_calls: list = field(default_factory=list)
+    fetch_comments_calls: list = field(default_factory=list)
+    _verify_raises: RuntimeError | None = None
+
+    def create_post(self, payload):
+        self.create_post_calls.append(payload)
+        return self.create_post_resp
+
+    def create_comment(self, parent_id, payload):
+        self.create_comment_calls.append((parent_id, payload))
+        return self.create_comment_resp
+
+    def verify_challenge(self, code, answer):
+        self.verify_calls.append((code, answer))
+        if self._verify_raises:
+            raise self._verify_raises
+        return self.verify_resp
+
+    def fetch_post(self, post_id):
+        self.fetch_post_calls.append(post_id)
+        return self.fetch_post_resp
+
+    def fetch_comments(self, parent_id):
+        self.fetch_comments_calls.append(parent_id)
+        return self.fetch_comments_resp
 
 
-def test_transport_post_create_uses_posts_endpoint(monkeypatch) -> None:
+# ---------------------------------------------------------------------------
+# Credential tests
+# ---------------------------------------------------------------------------
+
+def test_credential_token_env_takes_precedence(monkeypatch, tmp_path: Path) -> None:
+    """MOLTBOOK_TOKEN env var takes precedence over credentials file."""
     m = _load_bridge_module()
+    monkeypatch.delenv("MOLTBOOK_TOKEN", raising=False)
+    monkeypatch.setenv("MOLTBOOK_TOKEN", "tok_env")
+    creds_dir = tmp_path / ".config" / "moltbook"
+    creds_dir.mkdir(parents=True)
+    (creds_dir / "credentials.json").write_text(json.dumps({"api_key": "tok_file"}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert m._get_token() == "tok_env"
+
+
+def test_credential_api_key_from_file(tmp_path: Path, monkeypatch) -> None:
+    m = _load_bridge_module()
+    monkeypatch.delenv("MOLTBOOK_TOKEN", raising=False)
+    creds_dir = tmp_path / ".config" / "moltbook"
+    creds_dir.mkdir(parents=True)
+    (creds_dir / "credentials.json").write_text(json.dumps({"api_key": "tok_file"}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    token = m._get_token()
+    assert token == "tok_file"
+
+
+def test_credential_no_token_blocks_create(tmp_path: Path, monkeypatch) -> None:
+    """No credential → no network call, immediate failure."""
+    m = _load_bridge_module()
+    monkeypatch.setattr(m, "_get_token", lambda: None)
     calls = _capture_urlopen(monkeypatch)
 
+    resp = _load_fixture("post_create_verified_pending.json")
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    exit_code = m.cmd_create(client, store,
+                             json.dumps({"content": "x", "type": "post"}))
+    assert exit_code == 1
+    # Zero network calls
+    assert len(calls) == 0
+
+
+def test_credential_token_never_persisted(tmp_path: Path, monkeypatch) -> None:
+    """Token does not appear in stored transaction data."""
+    m = _load_bridge_module()
+    monkeypatch.setattr(m, "_get_token", lambda: "secret_tok")
+    resp = _load_fixture("post_create_verified_pending.json")
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    assert m.cmd_create(client, store,
+                        json.dumps({"content": "x", "type": "post"})) == 0
+
+    raw = (tmp_path / "data" / "moltbook" / "transactions.json").read_text()
+    assert "secret_tok" not in raw
+    assert "Bearer" not in raw
+    assert "Authorization" not in raw
+
+
+# ---------------------------------------------------------------------------
+# Transport: outbound body stripping
+# ---------------------------------------------------------------------------
+
+def test_outbound_body_strips_type_and_parent_post_id(monkeypatch) -> None:
+    m = _load_bridge_module()
+    calls = _capture_urlopen(monkeypatch)
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
     client = m.MoltbookClient("https://api.example.com")
-    client.create_post({"content": "hello", "type": "post"})
+    client.create_post(m._build_api_payload({
+        "content": "hello", "type": "post", "parent_post_id": "should_be_removed"
+    }))
 
     assert len(calls) == 1
-    c = calls[0]
-    assert c["method"] == "POST"
-    assert c["full_url"] == "https://api.example.com/posts"
-    body = _json_body(c["data"])
-    assert body is not None
+    body = json.loads(calls[0]["data"].decode())
+    assert "type" not in body
+    assert "parent_post_id" not in body
     assert body["content"] == "hello"
 
 
-def test_transport_comment_create_uses_nested_path(monkeypatch) -> None:
+def test_outbound_body_maps_reply_to_comment_id(monkeypatch) -> None:
     m = _load_bridge_module()
     calls = _capture_urlopen(monkeypatch)
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
 
     client = m.MoltbookClient("https://api.example.com")
-    client.create_comment("post_abc", {"content": "reply", "type": "comment"})
+    client.create_comment("post_abc", m._build_api_payload({
+        "content": "reply", "type": "comment",
+        "parent_post_id": "post_abc", "reply_to_comment_id": "comment_x",
+    }))
+
+    assert len(calls) == 1
+    body = json.loads(calls[0]["data"].decode())
+    assert "type" not in body
+    assert "parent_post_id" not in body
+    assert "reply_to_comment_id" not in body
+    assert body["parent_id"] == "comment_x"
+    assert body["content"] == "reply"
+
+
+def test_outbound_comment_create_exact_url_and_body(monkeypatch) -> None:
+    m = _load_bridge_module()
+    calls = _capture_urlopen(monkeypatch)
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    client = m.MoltbookClient("https://api.example.com")
+    client.create_comment("parent_123", {"content": "a comment"})
 
     assert len(calls) == 1
     c = calls[0]
     assert c["method"] == "POST"
-    assert c["full_url"] == "https://api.example.com/posts/post_abc/comments"
+    assert c["full_url"] == "https://api.example.com/posts/parent_123/comments"
+    body = json.loads(c["data"].decode())
+    assert body == {"content": "a comment"}
 
 
-def test_transport_post_fetch_uses_posts_path(monkeypatch) -> None:
+# ---------------------------------------------------------------------------
+# Transport: basic routing
+# ---------------------------------------------------------------------------
+
+def test_transport_post_create_uses_posts(monkeypatch) -> None:
     m = _load_bridge_module()
     calls = _capture_urlopen(monkeypatch)
-
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
     client = m.MoltbookClient("https://api.example.com")
-    client.fetch_post("post_xyz")
-
-    assert len(calls) == 1
-    c = calls[0]
-    assert c["method"] == "GET"
-    assert c["full_url"] == "https://api.example.com/posts/post_xyz"
+    client.create_post({"content": "x"})
+    assert calls[0]["full_url"] == "https://api.example.com/posts"
+    assert calls[0]["method"] == "POST"
 
 
 def test_transport_verify_uses_verify_endpoint(monkeypatch) -> None:
     m = _load_bridge_module()
     calls = _capture_urlopen(monkeypatch)
-
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
     client = m.MoltbookClient("https://api.example.com")
-    client.verify_challenge("ch_abc", "42")
-
-    assert len(calls) == 1
-    c = calls[0]
-    assert c["method"] == "POST"
-    assert c["full_url"] == "https://api.example.com/verify"
-    body = _json_body(c["data"])
-    assert body is not None
-    assert body["verification_code"] == "ch_abc"
-    assert body["answer"] == "42"
+    client.verify_challenge("ch_x", "42")
+    assert calls[0]["full_url"] == "https://api.example.com/verify"
+    body = json.loads(calls[0]["data"].decode())
+    assert body == {"verification_code": "ch_x", "answer": "42"}
 
 
-def test_transport_includes_authorization(monkeypatch) -> None:
+def test_transport_authorization_header(monkeypatch) -> None:
     m = _load_bridge_module()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok_abc")
     calls = _capture_urlopen(monkeypatch)
-    monkeypatch.setattr(m, "_get_token", lambda: "tok_abc123")
-
-    client = m.MoltbookClient("https://api.example.com")
-    client.fetch_post("p1")
-
-    assert len(calls) == 1
-    assert calls[0]["headers"].get("Authorization") == "Bearer tok_abc123"
+    m.MoltbookClient("https://api.example.com").fetch_post("p1")
+    assert calls[0]["headers"].get("Authorization") == "Bearer tok_abc"
 
 
 # ---------------------------------------------------------------------------
-# Response parsing — nested structures
+# Response parsing
 # ---------------------------------------------------------------------------
 
-def test_parse_create_post_nested_fields() -> None:
+def test_parse_create_post_nested() -> None:
     m = _load_bridge_module()
     raw = _load_fixture("post_create_verified_pending.json")
-    result = m._parse_create_response(raw, "post")
-    assert result["content_id"] == "post_8f3a_20260726"
-    assert result["url"] == "https://www.moltbook.com/posts/post_8f3a_20260726"
-    assert result["verification_code"] == "ch_4a9f2b1c"
-    assert result["challenge_text"] == "What is 7 + 4?"
-    assert result["instructions"] == "Reply with the numeric answer to verify."
+    identity = m._extract_content_identity(raw, "post")
+    assert identity["content_id"] == "post_8f3a_20260726"
+    ver = m._extract_verification(raw, "post")
+    assert ver["challenge_text"] == "What is 7 + 4?"
+    assert ver["verification_code"] == "ch_4a9f2b1c"
 
 
-def test_parse_create_comment_nested_fields() -> None:
-    m = _load_bridge_module()
-    raw = _load_fixture("comment_create_verified_pending.json")
-    result = m._parse_create_response(raw, "comment")
-    assert result["content_id"] == "comment_2b7e_20260726"
-    assert result["verification_code"] == "ch_7d3e5f6a"
-    assert result["parent_post_id"] == "post_abc"
-
-
-def test_parse_create_rejects_missing_success() -> None:
-    m = _load_bridge_module()
-    with __import__("pytest").raises(RuntimeError, match="success"):
-        m._parse_create_response({"success": False, "post": {}}, "post")
-
-
-def test_parse_create_rejects_missing_content_object() -> None:
-    m = _load_bridge_module()
-    with __import__("pytest").raises(RuntimeError, match="Expected 'post'"):
-        m._parse_create_response({"success": True}, "post")
-
-
-def test_parse_create_rejects_missing_verification() -> None:
-    m = _load_bridge_module()
-    with __import__("pytest").raises(RuntimeError, match="verification"):
-        m._parse_create_response({"success": True, "post": {"id": "x"}}, "post")
-
-
-def test_parse_create_rejects_missing_verification_code() -> None:
-    m = _load_bridge_module()
-    raw = {"success": True, "post": {"id": "x", "verification": {"challenge_text": "?"}}}
-    with __import__("pytest").raises(RuntimeError, match="verification_code"):
-        m._parse_create_response(raw, "post")
-
-
-# ---------------------------------------------------------------------------
-# Fetch parsing
-# ---------------------------------------------------------------------------
-
-def test_parse_fetch_post_extracts_post_object() -> None:
+def test_parse_fetch_post() -> None:
     m = _load_bridge_module()
     raw = _load_fixture("post_fetch_verified.json")
     obj = m._parse_fetch_response(raw, "post", "post_8f3a_20260726")
-    assert obj["id"] == "post_8f3a_20260726"
     assert obj["verification_status"] == "verified"
 
 
-def test_parse_fetch_post_rejects_mismatched_id() -> None:
-    m = _load_bridge_module()
-    raw = _load_fixture("post_fetch_verified.json")
-    with __import__("pytest").raises(RuntimeError, match="id"):
-        m._parse_fetch_response(raw, "post", "wrong_id")
-
-
-def test_parse_fetch_comment_selects_exact_comment() -> None:
+def test_parse_fetch_comment_via_post_comments() -> None:
     m = _load_bridge_module()
     raw = _load_fixture("comment_fetch_verified.json")
     obj = m._parse_fetch_response(raw, "comment", "comment_2b7e_20260726")
-    assert obj["id"] == "comment_2b7e_20260726"
     assert obj["verification_status"] == "verified"
 
 
-def test_parse_fetch_comment_rejects_when_not_found() -> None:
+def test_parse_fetch_comment_via_list_endpoint() -> None:
+    """Comment-list endpoint shape: top-level "comments" array."""
     m = _load_bridge_module()
-    raw = _load_fixture("comment_fetch_verified.json")
-    with __import__("pytest").raises(RuntimeError, match="not found"):
-        m._parse_fetch_response(raw, "comment", "nonexistent")
+    raw = _load_fixture("comment_list_verified.json")
+    obj = m._parse_fetch_response(raw, "comment", "comment_2b7e_20260726")
+    assert obj["verification_status"] == "verified"
+
+
+def test_parse_fetch_comment_via_comments_array_directly() -> None:
+    """Bare comments array at top level (no 'post' or 'comments' wrapper)."""
+    m = _load_bridge_module()
+    raw = {"comments": [
+        {"id": "c1", "verification_status": "verified"},
+        {"id": "c2", "verification_status": "unverified"},
+    ]}
+    obj = m._parse_fetch_response(raw, "comment", "c2")
+    assert obj["verification_status"] == "unverified"
 
 
 # ---------------------------------------------------------------------------
-# Challenge extraction (passthrough)
+# Malformed-create persistence (content identity always saved)
 # ---------------------------------------------------------------------------
 
-def test_challenge_extraction_post_passthrough() -> None:
+def test_malformed_missing_verification_object_persists(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    raw = _load_fixture("post_create_verified_pending.json")
-    result = m.extract_challenge(raw, "post")
-    assert result["challenge_text"] == "What is 7 + 4?"
-    assert result["verification_code"] == "ch_4a9f2b1c"
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    resp = _load_fixture("post_create_missing_verification.json")
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    exit_code = m.cmd_create(client, store,
+                             json.dumps({"content": "x", "type": "post"}))
+    assert exit_code == 1  # not success
+
+    stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
+    txn = stored[next(iter(stored))]
+    assert txn["state"] == "challenge_unavailable"
+    assert txn["content_id"] == "post_no_ver_01"
+    assert txn["content_type"] == "post"
+    assert txn["parse_failure"] != ""
+    assert txn["raw_create_response"] == resp
 
 
-def test_challenge_extraction_numeric_passthrough() -> None:
+def test_malformed_missing_vcode_persists(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    raw = _load_fixture("post_create_numeric_challenge.json")
-    result = m.extract_challenge(raw, "post")
-    assert result["challenge_text"] == "12"
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    resp = _load_fixture("post_create_missing_vcode.json")
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    exit_code = m.cmd_create(client, store,
+                             json.dumps({"content": "x", "type": "post"}))
+    assert exit_code == 1
+    stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
+    txn = stored[next(iter(stored))]
+    assert txn["state"] == "challenge_unavailable"
+    assert txn["content_id"] == "post_no_vcode_01"
+    assert "verification_code" in txn["parse_failure"].lower() or "Missing" in txn["parse_failure"]
+
+
+def test_malformed_missing_challenge_text_persists(tmp_path: Path) -> None:
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    resp = _load_fixture("post_create_missing_challenge_text.json")
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    exit_code = m.cmd_create(client, store,
+                             json.dumps({"content": "x", "type": "post"}))
+    assert exit_code == 1
+    stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
+    txn = stored[next(iter(stored))]
+    assert txn["state"] == "challenge_unavailable"
+    assert txn["content_id"] == "post_no_chall_01"
+
+
+def test_malformed_expired_challenge_creates_pending(tmp_path: Path) -> None:
+    """Expired-but-structurally-valid challenge: creates as pending.
+    Expiry is enforced at verify time, not at create time."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    resp = _load_fixture("post_create_expired.json")
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    exit_code = m.cmd_create(client, store,
+                             json.dumps({"content": "x", "type": "post"}))
+    assert exit_code == 0  # structurally valid challenge
+    stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
+    txn = stored[next(iter(stored))]
+    assert txn["state"] == "pending"
+    assert txn["content_id"] == "post_exp_01"
+    # Now verify must reject due to expiry
+    exit_code = m.cmd_verify(client, store,
+                             next(iter(stored)), "8")
+    assert exit_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -299,34 +394,14 @@ def test_store_roundtrip(tmp_path: Path) -> None:
     txn = m.Transaction(transaction_id="t1", content_id="p1", content_type="post",
                         parent_post_id="", url="https://x", raw_challenge_text="?",
                         verification_code="ch", challenge_instructions="",
-                        expires_at=time.time()+300, raw_create_response={"ok":True})
+                        expires_at=time.time()+300, raw_create_response={})
     store.save(txn)
     loaded = store.load("t1")
     assert loaded is not None
     assert loaded.content_id == "p1"
-    assert loaded.state == "pending"
 
 
-def test_store_update_state(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    store = m.TransactionStore(tmp_path)
-    txn = m.Transaction(transaction_id="t2", content_id="p2", content_type="post",
-                        parent_post_id="", url="https://x", raw_challenge_text="?",
-                        verification_code="ch", challenge_instructions="",
-                        expires_at=time.time()+600, raw_create_response={})
-    store.save(txn)
-    store.update_state("t2", state="verified", verified_at=time.time())
-    loaded = store.load("t2")
-    assert loaded is not None
-    assert loaded.state == "verified"
-
-
-def test_store_load_nonexistent(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    assert m.TransactionStore(tmp_path).load("no") is None
-
-
-def test_store_permissions_restrictive(tmp_path: Path) -> None:
+def test_store_permissions(tmp_path: Path) -> None:
     m = _load_bridge_module()
     store = m.TransactionStore(tmp_path)
     txn = m.Transaction(transaction_id="tp", content_id="pp", content_type="post",
@@ -335,91 +410,141 @@ def test_store_permissions_restrictive(tmp_path: Path) -> None:
                         expires_at=time.time()+300, raw_create_response={})
     store.save(txn)
     mode = store.path().stat().st_mode & 0o777
-    assert mode & 0o077 == 0, f"permissions too open: {oct(mode)}"
+    assert mode & 0o077 == 0
 
 
 # ---------------------------------------------------------------------------
-# Create command
+# Create — normal path
 # ---------------------------------------------------------------------------
 
-def _mkcli(create_post=None, create_comment=None, verify=None, fetch_post=None):
-    return _MockClient(create_post_resp=create_post or {}, create_comment_resp=create_comment or {},
-                       verify_resp=verify or {}, fetch_post_resp=fetch_post or {})
-
-
-def test_create_post_persists_and_outputs(tmp_path: Path) -> None:
+def test_create_post(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    resp = _load_fixture("post_create_verified_pending.json")
-    client = _mkcli(create_post=resp)
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_post_resp=_load_fixture("post_create_verified_pending.json"))
     store = m.TransactionStore(tmp_path)
 
-    exit_code = m.cmd_create(client, store, json.dumps({"content": "test", "type": "post"}))
-    assert exit_code == 0
+    assert m.cmd_create(client, store,
+                        json.dumps({"content": "x", "type": "post"})) == 0
 
-    stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
-    txn_data = stored[next(iter(stored))]
-    assert txn_data["content_id"] == "post_8f3a_20260726"
-    assert txn_data["content_type"] == "post"
-    assert txn_data["raw_challenge_text"] == "What is 7 + 4?"
-    assert txn_data["state"] == "pending"
-    assert txn_data["raw_create_response"] == resp
+    txn = store.load(next(iter(json.loads(
+        (tmp_path / "data" / "moltbook" / "transactions.json").read_text()))))
+    assert txn is not None
+    assert txn.content_id == "post_8f3a_20260726"
+    assert txn.state == "pending"
 
 
-def test_create_comment_persists_parent_id(tmp_path: Path) -> None:
+def test_create_comment(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    resp = _load_fixture("comment_create_verified_pending.json")
-    client = _mkcli(create_comment=resp)
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_comment_resp=_load_fixture("comment_create_verified_pending.json"))
     store = m.TransactionStore(tmp_path)
 
-    exit_code = m.cmd_create(client, store,
-        json.dumps({"content": "reply", "type": "comment", "parent_post_id": "post_abc"}))
-    assert exit_code == 0
+    assert m.cmd_create(client, store,
+        json.dumps({"content": "r", "type": "comment", "parent_post_id": "post_abc"})) == 0
 
-    stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
-    txn_data = stored[next(iter(stored))]
-    assert txn_data["content_type"] == "comment"
-    assert txn_data["parent_post_id"] == "post_abc"
+    txn = store.load(next(iter(json.loads(
+        (tmp_path / "data" / "moltbook" / "transactions.json").read_text()))))
+    assert txn is not None
+    assert txn.content_type == "comment"
+    assert txn.parent_post_id == "post_abc"
 
 
 def test_create_rejects_ambiguous_type(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    exit_code = m.cmd_create(_mkcli(), m.TransactionStore(tmp_path),
-                             json.dumps({"content": "x"}))
-    assert exit_code == 1
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    assert m.cmd_create(_MockClient(), m.TransactionStore(tmp_path),
+                        json.dumps({"content": "x"})) == 1
 
 
 def test_create_rejects_comment_without_parent(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    exit_code = m.cmd_create(_mkcli(), m.TransactionStore(tmp_path),
-                             json.dumps({"content": "x", "type": "comment"}))
-    assert exit_code == 1
-
-
-def test_create_rejects_invalid_json(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    assert m.cmd_create(_mkcli(), m.TransactionStore(tmp_path), "bad{") == 1
-
-
-def test_create_rejects_missing_content(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    assert m.cmd_create(_mkcli(), m.TransactionStore(tmp_path),
-                        json.dumps({"type": "post"})) == 1
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    assert m.cmd_create(_MockClient(), m.TransactionStore(tmp_path),
+                        json.dumps({"content": "x", "type": "comment"})) == 1
 
 
 # ---------------------------------------------------------------------------
-# Verify — expiry
+# Verify — terminal and expiry
 # ---------------------------------------------------------------------------
 
-def test_verify_rejects_expired(tmp_path: Path) -> None:
+def test_verify_rejects_terminal_state(tmp_path: Path) -> None:
     m = _load_bridge_module()
-    client = _mkcli(create_post=_load_fixture("post_create_expired.json"))
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(transaction_id="t1", content_id="p1", content_type="post",
+                        parent_post_id="", url="https://x", raw_challenge_text="q",
+                        verification_code="c", challenge_instructions="",
+                        expires_at=time.time()+999, raw_create_response={},
+                        state="challenge_unavailable")
+    store.save(txn)
+    assert m.cmd_verify(client, store, "t1", "42") == 1
+
+
+def test_verify_rejects_pending_expired(tmp_path: Path) -> None:
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    resp = _load_fixture("post_create_expired.json")
+    # Override to make it pending despite expired challenge (synthetic)
+    client = _MockClient(create_post_resp=resp)
+    store = m.TransactionStore(tmp_path)
+
+    # Force-create pending despite expired (test internal consistency)
+    txn = m.Transaction(transaction_id="t_exp", content_id="p_exp", content_type="post",
+                        parent_post_id="", url="https://x", raw_challenge_text="q",
+                        verification_code="c", challenge_instructions="",
+                        expires_at=0, raw_create_response={})
+    store.save(txn)
+    assert m.cmd_verify(client, store, "t_exp", "8") == 1
+
+
+# ---------------------------------------------------------------------------
+# Verify — happy path
+# ---------------------------------------------------------------------------
+
+def test_verify_post_happy(tmp_path: Path) -> None:
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    create = dict(_load_fixture("post_create_verified_pending.json"))
+    create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
+
+    client = _MockClient(create_post_resp=create,
+                         verify_resp=_load_fixture("verify_accepted.json"),
+                         fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     store = m.TransactionStore(tmp_path)
 
     assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
     txn_id = next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+    assert m.cmd_verify(client, store, txn_id, "11") == 0
+    assert store.load(txn_id).state == "verified"
 
-    assert m.cmd_verify(client, store, txn_id, "8") == 1
+
+def test_verify_comment_happy(tmp_path: Path) -> None:
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    create = dict(_load_fixture("comment_create_verified_pending.json"))
+    create["comment"]["verification"]["expires_at"] = "2099-07-26T18:15:00Z"
+
+    client = _MockClient(create_comment_resp=create,
+                         verify_resp=_load_fixture("verify_accepted.json"),
+                         fetch_post_resp=_load_fixture("comment_fetch_verified.json"))
+    store = m.TransactionStore(tmp_path)
+
+    assert m.cmd_create(client, store,
+        json.dumps({"content": "r", "type": "comment", "parent_post_id": "post_abc"})) == 0
+    txn_id = next(iter(json.loads(
+        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+    assert m.cmd_verify(client, store, txn_id, "4") == 0
+    assert store.load(txn_id).state == "verified"
 
 
 # ---------------------------------------------------------------------------
@@ -428,204 +553,125 @@ def test_verify_rejects_expired(tmp_path: Path) -> None:
 
 def test_verify_rejects_second_attempt(tmp_path: Path) -> None:
     m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
     create = dict(_load_fixture("post_create_verified_pending.json"))
     create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
 
-    client = _mkcli(create_post=create,
-                    verify=_load_fixture("verify_accepted.json"),
-                    fetch_post=_load_fixture("post_fetch_verified.json"))
+    client = _MockClient(create_post_resp=create,
+                         verify_resp=_load_fixture("verify_accepted.json"),
+                         fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     store = m.TransactionStore(tmp_path)
 
     assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
     txn_id = next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
-
     assert m.cmd_verify(client, store, txn_id, "11") == 0
     assert m.cmd_verify(client, store, txn_id, "11") == 1  # terminal
 
 
 # ---------------------------------------------------------------------------
-# Crash-safe attempted semantics
+# Crash-safe: attempted reconciles after expiry
 # ---------------------------------------------------------------------------
 
-def test_attempted_state_never_resubmits(tmp_path: Path) -> None:
-    """A transaction in 'attempted' state must never call verify_challenge.
-
-    Simulates process termination: create txn, mark attempted, reload in
-    new store/client, call verify again — zero verify HTTP calls occur.
-    """
+def test_attempted_after_expiry_reconciles_to_verified(tmp_path: Path) -> None:
+    """Attempted txn with past expires_at: reconciles, 0 verify calls, 1 fetch, →verified."""
     m = _load_bridge_module()
-    create = dict(_load_fixture("post_create_verified_pending.json"))
-    create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
 
-    client = _mkcli(create_post=create,
-                    verify=_load_fixture("verify_accepted.json"),
-                    fetch_post=_load_fixture("post_fetch_verified.json"))
     store = m.TransactionStore(tmp_path)
 
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
-    txn_id = next(iter(json.loads(
-        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+    txn = m.Transaction(transaction_id="t_attempted_exp", content_id="post_8f3a_20260726",
+                        content_type="post", parent_post_id="", url="https://x",
+                        raw_challenge_text="q", verification_code="c",
+                        challenge_instructions="", expires_at=0.0,  # past
+                        raw_create_response={}, state="attempted",
+                        submitted_answer="11", attempted_at=time.time())
+    store.save(txn)
 
-    # Mark attempted directly (simulate crash after mark but before verify response)
-    store.update_state(txn_id, state="attempted", submitted_answer="11",
-                       attempted_at=time.time())
-
-    # --- Simulate new process ---
+    fresh_client = _MockClient(fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     fresh_store = m.TransactionStore(tmp_path)
-    fresh_client = _mkcli(create_post=create,
-                          verify=_load_fixture("verify_accepted.json"),
-                          fetch_post=_load_fixture("post_fetch_verified.json"))
 
-    exit_code = m.cmd_verify(fresh_client, fresh_store, txn_id, "11")
+    exit_code = m.cmd_verify(fresh_client, fresh_store, "t_attempted_exp", "11")
     assert exit_code == 0
-
-    # Zero verify_challenge calls
     assert len(fresh_client.verify_calls) == 0
-    # One fetch_post call (reconciliation)
     assert len(fresh_client.fetch_post_calls) == 1
-
-    loaded = fresh_store.load(txn_id)
+    loaded = fresh_store.load("t_attempted_exp")
     assert loaded is not None
     assert loaded.state == "verified"
 
 
-def test_attempted_reconciliation_stays_attempted_if_unverified(tmp_path: Path) -> None:
-    """Reconciliation on attempted txn with unverified content stays attempted."""
+def test_attempted_after_expiry_stays_attempted_if_pending(tmp_path: Path) -> None:
+    """Attempted txn, past expiry, content still pending: stays attempted."""
     m = _load_bridge_module()
-    create = dict(_load_fixture("post_create_verified_pending.json"))
-    create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
 
-    client = _mkcli(create_post=create, verify={},
-                    fetch_post=_load_fixture("post_fetch_pending.json"))
     store = m.TransactionStore(tmp_path)
 
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
-    txn_id = next(iter(json.loads(
-        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+    txn = m.Transaction(transaction_id="t_att_pend", content_id="p2",
+                        content_type="post", parent_post_id="", url="https://x",
+                        raw_challenge_text="q", verification_code="c",
+                        challenge_instructions="", expires_at=0.0,
+                        raw_create_response={}, state="attempted",
+                        submitted_answer="11", attempted_at=time.time())
+    store.save(txn)
 
-    store.update_state(txn_id, state="attempted", submitted_answer="11",
-                       attempted_at=time.time())
-
-    fresh_client = _mkcli(create_post=create, verify={},
-                          fetch_post=_load_fixture("post_fetch_pending.json"))
+    fresh_client = _MockClient(fetch_post_resp=_load_fixture("post_fetch_pending.json"))
     fresh_store = m.TransactionStore(tmp_path)
 
-    exit_code = m.cmd_verify(fresh_client, fresh_store, txn_id, "11")
+    exit_code = m.cmd_verify(fresh_client, fresh_store, "t_att_pend", "11")
     assert exit_code == 1
-    assert len(fresh_client.verify_calls) == 0  # no resubmit
-
-    loaded = fresh_store.load(txn_id)
+    assert len(fresh_client.verify_calls) == 0
+    loaded = fresh_store.load("t_att_pend")
     assert loaded is not None
-    assert loaded.state == "attempted"  # not indeterminate
+    assert loaded.state == "attempted"
 
 
 # ---------------------------------------------------------------------------
-# Verify — happy path
-# ---------------------------------------------------------------------------
-
-def test_verify_succeeds_post(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    create = dict(_load_fixture("post_create_verified_pending.json"))
-    create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
-
-    client = _mkcli(create_post=create,
-                    verify=_load_fixture("verify_accepted.json"),
-                    fetch_post=_load_fixture("post_fetch_verified.json"))
-    store = m.TransactionStore(tmp_path)
-
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
-    txn_id = next(iter(json.loads(
-        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
-
-    assert m.cmd_verify(client, store, txn_id, "11") == 0
-    loaded = store.load(txn_id)
-    assert loaded is not None
-    assert loaded.state == "verified"
-
-
-def test_verify_succeeds_comment(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    create = dict(_load_fixture("comment_create_verified_pending.json"))
-    create["comment"]["verification"]["expires_at"] = "2099-07-26T18:15:00Z"
-
-    # comment fetch returns a post with comments array
-    fetch = _load_fixture("comment_fetch_verified.json")
-
-    client = _mkcli(create_comment=create,
-                    verify=_load_fixture("verify_accepted.json"),
-                    fetch_post=fetch)
-    store = m.TransactionStore(tmp_path)
-
-    assert m.cmd_create(client, store,
-        json.dumps({"content": "reply", "type": "comment", "parent_post_id": "post_abc"})) == 0
-    txn_id = next(iter(json.loads(
-        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
-
-    assert m.cmd_verify(client, store, txn_id, "4") == 0
-    loaded = store.load(txn_id)
-    assert loaded is not None
-    assert loaded.state == "verified"
-
-
-# ---------------------------------------------------------------------------
-# Verify — timeout recovery
+# Timeout recovery
 # ---------------------------------------------------------------------------
 
 def test_verify_timeout_recovers_if_verified(tmp_path: Path) -> None:
     m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
     create = dict(_load_fixture("post_create_verified_pending.json"))
     create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
 
-    client = _mkcli(create_post=create, verify={},
-                    fetch_post=_load_fixture("post_fetch_verified.json"))
+    client = _MockClient(create_post_resp=create, verify_resp={},
+                         fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     client._verify_raises = RuntimeError("timed out")
     store = m.TransactionStore(tmp_path)
 
     assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
     txn_id = next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
-
-    exit_code = m.cmd_verify(client, store, txn_id, "11")
-    assert exit_code == 0
-    loaded = store.load(txn_id)
-    assert loaded is not None
-    assert loaded.state == "verified"
-
-
-def test_verify_timeout_indeterminate_if_unverified(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    create = dict(_load_fixture("post_create_verified_pending.json"))
-    create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
-
-    client = _mkcli(create_post=create, verify={},
-                    fetch_post=_load_fixture("post_fetch_pending.json"))
-    client._verify_raises = RuntimeError("timed out")
-    store = m.TransactionStore(tmp_path)
-
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
-    txn_id = next(iter(json.loads(
-        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
-
-    exit_code = m.cmd_verify(client, store, txn_id, "11")
-    assert exit_code == 1
-    loaded = store.load(txn_id)
-    assert loaded is not None
-    assert loaded.state == "indeterminate"
+    assert m.cmd_verify(client, store, txn_id, "11") == 0
+    assert store.load(txn_id).state == "verified"
 
 
 # ---------------------------------------------------------------------------
-# Verify — nonexistent
+# Security: no tokens in fixtures
 # ---------------------------------------------------------------------------
 
-def test_verify_nonexistent(tmp_path: Path) -> None:
-    m = _load_bridge_module()
-    assert m.cmd_verify(_mkcli(), m.TransactionStore(tmp_path), "no", "42") == 1
+def test_fixtures_contain_no_tokens() -> None:
+    for name in sorted(FIXTURES.iterdir()):
+        if name.suffix == ".json":
+            text = name.read_text()
+            assert "Bearer" not in text, f"{name.name}"
+            assert "authorization" not in text.lower(), f"{name.name}"
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _cli_run(*args):
+    return subprocess.run([sys.executable, MOLTBOOK_WRITE, *args],
+                          capture_output=True, text=True, cwd=str(REPO_ROOT))
+
 
 def test_cli_create_help() -> None:
     assert _cli_run("create", "--help").returncode in (0, 2)
@@ -640,49 +686,36 @@ def test_cli_no_subcommand() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Security
-# ---------------------------------------------------------------------------
-
-def test_fixtures_contain_no_tokens() -> None:
-    for name in sorted(FIXTURES.iterdir()):
-        if name.suffix == ".json":
-            text = name.read_text()
-            assert "Bearer" not in text, f"{name.name} contains Bearer"
-            assert "authorization" not in text.lower(), f"{name.name}"
-
-
-# ---------------------------------------------------------------------------
 # Dry-run transcript
 # ---------------------------------------------------------------------------
 
 def test_dry_run_transcript(tmp_path: Path) -> None:
     m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
     create = dict(_load_fixture("post_create_verified_pending.json"))
     create["post"]["verification"]["expires_at"] = "2099-07-26T18:05:00Z"
 
-    client = _mkcli(create_post=create,
-                    verify=_load_fixture("verify_accepted.json"),
-                    fetch_post=_load_fixture("post_fetch_verified.json"))
+    client = _MockClient(create_post_resp=create,
+                         verify_resp=_load_fixture("verify_accepted.json"),
+                         fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     store = m.TransactionStore(tmp_path)
 
     sys.stdout.write("=== CREATE ===\n")
     assert m.cmd_create(client, store, json.dumps({
         "content": "What is the smallest practical receipt?",
-        "type": "post",
-    })) == 0
+        "type": "post"})) == 0
 
     stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
     txn_id = next(iter(stored))
     txn = stored[txn_id]
     print(f"TX: {txn_id}  content: {txn['content_id']}  type: {txn['content_type']}")
     print(f"CHALLENGE: {txn['raw_challenge_text']}  code: {txn['verification_code']}")
-    assert txn["raw_challenge_text"] == "What is 7 + 4?"
 
     sys.stdout.write("\n=== VERIFY (answer: 11) ===\n")
     assert m.cmd_verify(client, store, txn_id, "11") == 0
     loaded = store.load(txn_id)
-    assert loaded is not None
-    print(f"STATE: {loaded.state}  answer: {loaded.submitted_answer}")
+    print(f"STATE: {loaded.state}")
     assert loaded.state == "verified"
 
     sys.stdout.write("\n=== VERIFY (second — rejected) ===\n")

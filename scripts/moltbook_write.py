@@ -1,45 +1,44 @@
 #!/usr/bin/env python3
 """Minimal Moltbook verified-write bridge for Hermes.
 
-Two commands:
+Commands: create / verify.
 
-    moltbook_write create <payload>
-    moltbook_write verify <transaction-id> <answer>
-
-Real API contract:
+API contract (observed, B001):
   POST /posts                              — create post
   POST /posts/{parent_id}/comments         — create comment
   POST /verify                             — submit challenge answer
   GET  /posts/{post_id}                    — fetch post
-  GET  /posts/{parent_id}                  — fetch parent post (for comments)
+  GET  /posts/{parent_id}                  — fetch parent post + comments
 
-The bridge persists the raw API response, extracts the nested challenge
-without interpretation, enforces crash-safe single-attempt semantics,
-checks expiry, and requires final content state 'verified'.
+Credentials (never persisted, never printed):
+  1. MOLTBOOK_TOKEN  env var
+  2. api_key  field in  ~/.config/moltbook/credentials.json
 
-Prohibited: regex interpretation, keyword maps, character collapse,
+Prohibited: regex challenge interpretation, keyword maps, character collapse,
 auto-repost, auto-retry, multiple submissions.
 """
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import os
 import stat
 import time
+import uuid as _uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Credentials
+# Credentials — read, never persist, never print
 # ---------------------------------------------------------------------------
 
 MOLTBOOK_BASE = os.environ.get("MOLTBOOK_API_URL", "https://www.moltbook.com/api/v1")
 
 
 def _get_token() -> str | None:
-    """Read MOLTBOOK_TOKEN env var, falling back to credentials file."""
+    """MOLTBOOK_TOKEN  →  ~/.config/moltbook/credentials.json api_key."""
     token = os.environ.get("MOLTBOOK_TOKEN")
     if token:
         return token
@@ -47,11 +46,9 @@ def _get_token() -> str | None:
     if creds_path.exists():
         try:
             data = json.loads(creds_path.read_text())
-            token = data.get("token") or data.get("api_token") or data.get("access_token")
-            if token:
-                return token
+            return data.get("api_key") or data.get("token") or data.get("access_token")
         except (json.JSONDecodeError, OSError):
-            pass
+            return None
     return None
 
 
@@ -60,16 +57,11 @@ def _get_token() -> str | None:
 # ---------------------------------------------------------------------------
 
 class MoltbookClient:
-    """HTTP client for the real Moltbook API.
-
-    Transport method _api_call is the single boundary for testing.
-    """
+    """HTTP client for the real Moltbook API."""
 
     def __init__(self, base_url: str = MOLTBOOK_BASE, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-
-    # -- public API surface ------------------------------------------------
 
     def create_post(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._api_call("POST", "/posts", payload)
@@ -79,12 +71,15 @@ class MoltbookClient:
 
     def verify_challenge(self, verification_code: str, answer: str) -> dict[str, Any]:
         return self._api_call("POST", "/verify", {
-            "verification_code": verification_code,
-            "answer": answer,
+            "verification_code": verification_code, "answer": answer,
         })
 
     def fetch_post(self, post_id: str) -> dict[str, Any]:
         return self._api_call("GET", f"/posts/{post_id}")
+
+    def fetch_comments(self, parent_post_id: str) -> dict[str, Any]:
+        """Fallback: official comment-list endpoint."""
+        return self._api_call("GET", f"/posts/{parent_post_id}/comments")
 
     # -- transport --------------------------------------------------------
 
@@ -125,26 +120,28 @@ class MoltbookClient:
 class Transaction:
     transaction_id: str
     content_id: str
-    content_type: str              # "post" | "comment"
-    parent_post_id: str            # for comments
+    content_type: str                     # "post" | "comment"
+    parent_post_id: str                   # "" for posts
     url: str
-    raw_challenge_text: str
-    verification_code: str
+    raw_challenge_text: str               # "" when challenge_unavailable
+    verification_code: str                # "" when challenge_unavailable
     challenge_instructions: str
-    expires_at: float
+    expires_at: float                     # 0 when unavailable
     raw_create_response: dict[str, Any]
-    state: str = "pending"         # pending | attempted | verified | indeterminate
+    # challenge_unavailable details (parsing failure info)
+    parse_failure: str = ""
+    state: str = "pending"                # pending|attempted|verified|indeterminate|challenge_unavailable
     submitted_answer: str | None = None
     attempted_at: float | None = None
     verified_at: float | None = None
 
     @property
     def is_expired(self) -> bool:
-        return time.time() > self.expires_at
+        return self.expires_at > 0 and time.time() > self.expires_at
 
     @property
     def is_terminal(self) -> bool:
-        return self.state in ("verified", "indeterminate")
+        return self.state in ("verified", "indeterminate", "challenge_unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +152,6 @@ STORE_DIR = "data/moltbook"
 
 
 class TransactionStore:
-    """JSON persistence with restrictive permissions."""
-
     def __init__(self, repo_root: Path) -> None:
         self._dir = repo_root / STORE_DIR
         self._dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -207,6 +202,7 @@ def _txn_to_dict(txn: Transaction) -> dict[str, Any]:
         "challenge_instructions": txn.challenge_instructions,
         "expires_at": txn.expires_at,
         "raw_create_response": txn.raw_create_response,
+        "parse_failure": txn.parse_failure,
         "state": txn.state,
         "submitted_answer": txn.submitted_answer,
         "attempted_at": txn.attempted_at,
@@ -228,6 +224,7 @@ def _txn_from_dict(d: dict[str, Any]) -> Transaction | None:
         challenge_instructions=d.get("challenge_instructions", ""),
         expires_at=float(d["expires_at"]),
         raw_create_response=d["raw_create_response"],
+        parse_failure=d.get("parse_failure", ""),
         state=d.get("state", "pending"),
         submitted_answer=d.get("submitted_answer"),
         attempted_at=float(d["attempted_at"]) if d.get("attempted_at") else None,
@@ -236,54 +233,74 @@ def _txn_from_dict(d: dict[str, Any]) -> Transaction | None:
 
 
 # ---------------------------------------------------------------------------
-# Response parsing
+# Create-response parsing — split identity / verification
 # ---------------------------------------------------------------------------
 
-def _parse_create_response(raw: dict[str, Any], content_type: str) -> dict[str, Any]:
-    """Extract nested content object, validate, return flat result."""
+def _extract_content_identity(raw: dict[str, Any], content_type: str) -> dict[str, Any]:
+    """Extract content object identity fields.  Raises on failure."""
     if raw.get("success") is not True:
-        raise RuntimeError(f"Create returned success != true: {raw}")
+        raise RuntimeError(f"API create returned success != true: {json.dumps(raw)}")
 
     obj = raw.get(content_type)
     if not isinstance(obj, dict):
-        raise RuntimeError(f"Expected '{content_type}' object, got: {type(obj).__name__}")
+        raise RuntimeError(f"Expected '{content_type}' object, got {type(obj).__name__}")
 
     content_id = obj.get("id", "")
     if not content_id:
-        raise RuntimeError(f"Missing content id in response: {obj}")
-
-    ver = obj.get("verification")
-    if not isinstance(ver, dict):
-        raise RuntimeError(f"Missing verification object in {content_type} response")
-
-    vcode = ver.get("verification_code", "")
-    chall = ver.get("challenge_text", "")
-    expires = ver.get("expires_at", "")
-    instr = ver.get("instructions", "")
-
-    if not vcode:
-        raise RuntimeError("Missing verification_code in verification object")
-
-    url = obj.get("url", "")
+        raise RuntimeError(f"Missing content id in {content_type} response")
 
     return {
         "content_id": content_id,
-        "url": url,
-        "verification_code": vcode,
-        "challenge_text": chall,
-        "expires_at": expires,
-        "instructions": instr,
+        "content_type": content_type,
+        "url": obj.get("url", ""),
         "parent_post_id": obj.get("parent_post_id", ""),
     }
 
 
+def _extract_verification(raw: dict[str, Any], content_type: str) -> dict[str, Any]:
+    """Extract verification fields.  Raises if missing/invalid."""
+    obj = raw.get(content_type, {})
+    ver = obj.get("verification")
+    if not isinstance(ver, dict):
+        raise RuntimeError("Missing or invalid verification object")
+
+    vcode = ver.get("verification_code", "")
+    if not vcode:
+        raise RuntimeError("Missing verification_code")
+
+    chall = ver.get("challenge_text", "")
+    if not chall:
+        raise RuntimeError("Missing challenge_text")
+
+    expires_raw = ver.get("expires_at", "")
+    ts = _parse_timestamp(expires_raw)
+    if ts <= 0:
+        raise RuntimeError(f"Unparseable or missing expires_at: {expires_raw}")
+
+    return {
+        "verification_code": vcode,
+        "challenge_text": chall,
+        "expires_at": ts,
+        "instructions": ver.get("instructions", ""),
+    }
+
+
+def _parse_timestamp(raw: str) -> float:
+    if not raw:
+        return 0.0
+    try:
+        return _dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Fetch-response parsing
+# ---------------------------------------------------------------------------
+
 def _parse_fetch_response(raw: dict[str, Any], content_type: str,
                           content_id: str) -> dict[str, Any]:
-    """Extract the content object from a fetch response.
-
-    For posts: raw["post"]
-    For comments: raw["post"]["comments"][exact match by id]
-    """
+    """Extract the exact content object by type and id."""
     if content_type == "post":
         post = raw.get("post")
         if not isinstance(post, dict):
@@ -293,23 +310,38 @@ def _parse_fetch_response(raw: dict[str, Any], content_type: str,
                 f"Fetched post id '{post.get('id')}' != expected '{content_id}'")
         return post
 
-    # comment
-    post_obj = raw.get("post")
-    if not isinstance(post_obj, dict):
-        raise RuntimeError("Comment fetch response missing 'post' wrapper")
-    comments = post_obj.get("comments")
-    if not isinstance(comments, list):
-        raise RuntimeError("Comment fetch response missing 'comments' list")
-    for c in comments:
-        if isinstance(c, dict) and c.get("id") == content_id:
-            return c
+    # comment — try post.comments[] first, then top-level comments array
+    for key in ("post", "comments"):
+        wrapper = raw.get(key)
+        if isinstance(wrapper, dict):
+            comments = wrapper.get("comments") if key == "post" else wrapper
+            if isinstance(comments, list):
+                for c in comments:
+                    if isinstance(c, dict) and c.get("id") == content_id:
+                        return c
+            continue
+        if isinstance(wrapper, list):
+            for c in wrapper:
+                if isinstance(c, dict) and c.get("id") == content_id:
+                    return c
+
     raise RuntimeError(f"Comment '{content_id}' not found in fetch response")
 
 
-def extract_challenge(create_response: dict[str, Any],
-                      content_type: str) -> dict[str, Any]:
-    """Passthrough: return nested challenge fields unchanged.  No interpretation."""
-    return _parse_create_response(create_response, content_type)
+# ---------------------------------------------------------------------------
+# Build API payload (strips local routing fields)
+# ---------------------------------------------------------------------------
+
+def _build_api_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """Return the outbound API body.  Strips type, parent_post_id, reply_to_comment_id.
+
+    Maps local reply_to_comment_id → Moltbook parent_id for threaded replies.
+    """
+    payload = {k: v for k, v in body.items()
+               if k not in ("type", "parent_post_id", "reply_to_comment_id")}
+    if "reply_to_comment_id" in body:
+        payload["parent_id"] = body["reply_to_comment_id"]
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -317,12 +349,13 @@ def extract_challenge(create_response: dict[str, Any],
 # ---------------------------------------------------------------------------
 
 def _uuid_short() -> str:
-    import uuid
-    return uuid.uuid4().hex[:12]
+    return _uuid.uuid4().hex[:12]
 
 
 def cmd_create(client: MoltbookClient, store: TransactionStore, payload: str) -> int:
-    """Create post or comment.  Prints challenge unchanged.  Stops."""
+    """Create post or comment.  Persists content identity even when verification
+    is malformed (challenge_unavailable state)."""
+    # --- parse payload ---
     try:
         body = json.loads(payload)
     except json.JSONDecodeError as exc:
@@ -334,7 +367,6 @@ def cmd_create(client: MoltbookClient, store: TransactionStore, payload: str) ->
         print(json.dumps({"error": "Payload must specify type: post or comment"}))
         return 1
 
-    # Check content field
     for fld in ("content", "text", "body"):
         if fld in body:
             break
@@ -348,46 +380,88 @@ def cmd_create(client: MoltbookClient, store: TransactionStore, payload: str) ->
             print(json.dumps({"error": "Comment payload must include parent_post_id"}))
             return 1
 
+    # --- credential guard ---
+    if _get_token() is None:
+        print(json.dumps({"error": "No Moltbook credential. Set MOLTBOOK_TOKEN or configure ~/.config/moltbook/credentials.json"}))
+        return 1
+
+    # --- issue create ---
+    api_payload = _build_api_payload(body)
     try:
         if content_type == "post":
-            raw = client.create_post(body)
+            raw = client.create_post(api_payload)
         else:
-            raw = client.create_comment(body["parent_post_id"], body)
+            raw = client.create_comment(body["parent_post_id"], api_payload)
     except RuntimeError as exc:
         print(json.dumps({"error": str(exc)}))
         return 1
 
+    # --- extract content identity ---
     try:
-        parsed = _parse_create_response(raw, content_type)
+        identity = _extract_content_identity(raw, content_type)
     except RuntimeError as exc:
-        print(json.dumps({"error": f"Invalid create response: {exc}"}))
+        print(json.dumps({"error": f"Create response missing content identity: {exc}"}))
         return 1
 
     transaction_id = _uuid_short()
 
+    # --- extract verification ---
+    try:
+        ver = _extract_verification(raw, content_type)
+    except RuntimeError as exc:
+        # Content exists but verification is malformed — persist anyway
+        txn = Transaction(
+            transaction_id=transaction_id,
+            content_id=identity["content_id"],
+            content_type=identity["content_type"],
+            parent_post_id=identity["parent_post_id"],
+            url=identity["url"],
+            raw_challenge_text="",
+            verification_code="",
+            challenge_instructions="",
+            expires_at=0.0,
+            raw_create_response=raw,
+            parse_failure=str(exc),
+            state="challenge_unavailable",
+        )
+        store.save(txn)
+
+        output = {
+            "transaction_id": transaction_id,
+            "content_id": identity["content_id"],
+            "content_type": identity["content_type"],
+            "url": identity["url"],
+            "state": "challenge_unavailable",
+            "parse_failure": str(exc),
+            "warning": "Content may exist on Moltbook but is not verified. Inspect manually.",
+        }
+        print(json.dumps(output, indent=2))
+        return 1
+
+    # --- valid challenge — persist pending transaction ---
     txn = Transaction(
         transaction_id=transaction_id,
-        content_id=parsed["content_id"],
-        content_type=content_type,
-        parent_post_id=parsed["parent_post_id"],
-        url=parsed["url"],
-        raw_challenge_text=parsed["challenge_text"],
-        verification_code=parsed["verification_code"],
-        challenge_instructions=parsed["instructions"],
-        expires_at=_parse_timestamp(parsed["expires_at"]),
+        content_id=identity["content_id"],
+        content_type=identity["content_type"],
+        parent_post_id=identity["parent_post_id"],
+        url=identity["url"],
+        raw_challenge_text=ver["challenge_text"],
+        verification_code=ver["verification_code"],
+        challenge_instructions=ver["instructions"],
+        expires_at=ver["expires_at"],
         raw_create_response=raw,
     )
     store.save(txn)
 
     output = {
         "transaction_id": transaction_id,
-        "content_id": parsed["content_id"],
-        "content_type": content_type,
-        "url": parsed["url"],
+        "content_id": identity["content_id"],
+        "content_type": identity["content_type"],
+        "url": identity["url"],
         "challenge": {
-            "challenge_text": parsed["challenge_text"],
-            "verification_code": parsed["verification_code"],
-            "instructions": parsed["instructions"],
+            "challenge_text": ver["challenge_text"],
+            "verification_code": ver["verification_code"],
+            "instructions": ver["instructions"],
         },
     }
     print(json.dumps(output, indent=2))
@@ -396,32 +470,37 @@ def cmd_create(client: MoltbookClient, store: TransactionStore, payload: str) ->
 
 def cmd_verify(client: MoltbookClient, store: TransactionStore,
                transaction_id: str, answer: str) -> int:
-    """Submit verification (pending) or reconcile (attempted)."""
+    """Submit verification or reconcile.
+
+    Order:
+      terminal state → reject
+      attempted      → read-only reconciliation (regardless of expiry)
+      pending        → check expiry, submit once
+    """
     txn = store.load(transaction_id)
     if txn is None:
         print(json.dumps({"error": f"No transaction: {transaction_id}"}))
         return 1
 
-    if txn.is_expired:
-        print(json.dumps({"error": "Transaction expired", "expires_at": txn.expires_at}))
-        return 1
-
     if txn.is_terminal:
         print(json.dumps({
-            "error": f"Transaction terminal ({txn.state}). No further attempts.",
+            "error": f"Transaction terminal ({txn.state}). No further action.",
         }))
         return 1
 
     if txn.state == "attempted":
-        # Crash-safe: only reconcile, never resubmit
         return _reconcile_attempted(client, store, txn)
 
-    # state == pending — mark attempted before any external request
+    # state == pending
+    if txn.is_expired:
+        print(json.dumps({"error": "Transaction expired", "expires_at": txn.expires_at}))
+        return 1
+
+    # mark attempted *before* external request
     now = time.time()
     store.update_state(transaction_id, state="attempted",
                        submitted_answer=answer, attempted_at=now)
 
-    # Submit answer
     try:
         client.verify_challenge(txn.verification_code, answer)
     except RuntimeError as exc:
@@ -432,10 +511,10 @@ def cmd_verify(client: MoltbookClient, store: TransactionStore,
 
 def _reconcile_attempted(client: MoltbookClient, store: TransactionStore,
                          txn: Transaction) -> int:
-    """Read-only reconciliation for an attempted transaction.
+    """Read-only reconciliation for attempted transactions.
 
-    Fetches content, checks status.  Success if verified.
-    Otherwise stays attempted (not indeterminate).
+    Never resubmits.  Expired challenges are irrelevant — the answer was
+    already submitted.  Only checks final content state.
     """
     try:
         content = _fetch_content_object(client, txn)
@@ -446,10 +525,11 @@ def _reconcile_attempted(client: MoltbookClient, store: TransactionStore,
         }))
         return 1
 
-    if content.get("verification_status") == "verified":
-        now = time.time()
-        store.update_state(txn.transaction_id, state="verified", verified_at=now)
-        receipt = {
+    vs = content.get("verification_status", "")
+    if vs == "verified":
+        store.update_state(txn.transaction_id, state="verified",
+                           verified_at=time.time())
+        print(json.dumps({
             "transaction_id": txn.transaction_id,
             "content_id": txn.content_id,
             "content_type": txn.content_type,
@@ -457,13 +537,12 @@ def _reconcile_attempted(client: MoltbookClient, store: TransactionStore,
             "verification_status": "verified",
             "status": "complete",
             "note": "Recovered via reconciliation",
-        }
-        print(json.dumps(receipt, indent=2))
+        }, indent=2))
         return 0
 
     print(json.dumps({
         "error": "Content not yet verified. Requires explicit inspection.",
-        "verification_status": content.get("verification_status", "unknown"),
+        "verification_status": vs,
         "transaction_state": "attempted",
     }))
     return 1
@@ -471,13 +550,12 @@ def _reconcile_attempted(client: MoltbookClient, store: TransactionStore,
 
 def _handle_verify_error(client: MoltbookClient, store: TransactionStore,
                          txn: Transaction, error_msg: str) -> int:
-    """After verify error (timeout/network), refetch and check."""
     try:
         content = _fetch_content_object(client, txn)
         if content.get("verification_status") == "verified":
-            now = time.time()
-            store.update_state(txn.transaction_id, state="verified", verified_at=now)
-            receipt = {
+            store.update_state(txn.transaction_id, state="verified",
+                               verified_at=time.time())
+            print(json.dumps({
                 "transaction_id": txn.transaction_id,
                 "content_id": txn.content_id,
                 "content_type": txn.content_type,
@@ -485,14 +563,12 @@ def _handle_verify_error(client: MoltbookClient, store: TransactionStore,
                 "verification_status": "verified",
                 "status": "complete",
                 "note": f"Recovered after verify error: {error_msg}",
-            }
-            print(json.dumps(receipt, indent=2))
+            }, indent=2))
             return 0
     except RuntimeError:
         pass
 
-    store.update_state(txn.transaction_id, state="indeterminate",
-                       indeterminate_reason=error_msg)
+    store.update_state(txn.transaction_id, state="indeterminate")
     print(json.dumps({
         "error": "Verification failed and content not verified",
         "detail": error_msg,
@@ -503,12 +579,10 @@ def _handle_verify_error(client: MoltbookClient, store: TransactionStore,
 
 def _finalize_verification(client: MoltbookClient, store: TransactionStore,
                            txn: Transaction) -> int:
-    """Refetch content and enforce verified state."""
     try:
         content = _fetch_content_object(client, txn)
     except RuntimeError as exc:
-        store.update_state(txn.transaction_id, state="indeterminate",
-                           indeterminate_reason=str(exc))
+        store.update_state(txn.transaction_id, state="indeterminate")
         print(json.dumps({
             "error": f"Content refetch failed: {exc}",
             "transaction_state": "indeterminate",
@@ -516,10 +590,8 @@ def _finalize_verification(client: MoltbookClient, store: TransactionStore,
         return 1
 
     vs = content.get("verification_status", "")
-
     if vs != "verified":
-        store.update_state(txn.transaction_id, state="indeterminate",
-                           indeterminate_reason=f"status is '{vs}', not 'verified'")
+        store.update_state(txn.transaction_id, state="indeterminate")
         print(json.dumps({
             "error": "Verification incomplete",
             "verification_status": vs,
@@ -527,77 +599,56 @@ def _finalize_verification(client: MoltbookClient, store: TransactionStore,
         }))
         return 1
 
-    now = time.time()
-    store.update_state(txn.transaction_id, state="verified", verified_at=now)
-
-    receipt = {
+    store.update_state(txn.transaction_id, state="verified", verified_at=time.time())
+    print(json.dumps({
         "transaction_id": txn.transaction_id,
         "content_id": txn.content_id,
         "content_type": txn.content_type,
         "url": txn.url,
         "verification_status": "verified",
         "status": "complete",
-    }
-    print(json.dumps(receipt, indent=2))
+    }, indent=2))
     return 0
 
 
 def _fetch_content_object(client: MoltbookClient, txn: Transaction) -> dict[str, Any]:
-    """Fetch and extract the exact content object (post or comment)."""
     if txn.content_type == "post":
         raw = client.fetch_post(txn.content_id)
     else:
-        # Fetch parent post, then select exact comment by ID
         parent_id = txn.parent_post_id
         if not parent_id:
             raise RuntimeError("Comment transaction missing parent_post_id")
-        raw = client.fetch_post(parent_id)
-
+        # Try parent post (with comments[]) first, then comment-list endpoint
+        try:
+            raw = client.fetch_post(parent_id)
+        except RuntimeError:
+            raw = client.fetch_comments(parent_id)
+        except RuntimeError:
+            raise
     return _parse_fetch_response(raw, txn.content_type, txn.content_id)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _parse_timestamp(raw: str) -> float:
-    if not raw:
-        return 0.0
-    try:
-        import datetime
-        return datetime.datetime.fromisoformat(
-            raw.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return 0.0
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="moltbook_write",
-        description="Minimal Moltbook verified-write bridge for Hermes",
-    )
+        prog="moltbook_write", description="Minimal Moltbook verified-write bridge")
     sub = parser.add_subparsers(dest="command", required=True)
-
     c = sub.add_parser("create", help="Create a post or comment")
-    c.add_argument("payload", help="JSON payload with type, content, and optional parent_post_id")
-
+    c.add_argument("payload", help="JSON payload with type, content")
     v = sub.add_parser("verify", help="Submit verification or reconcile")
     v.add_argument("transaction_id")
     v.add_argument("answer")
-
     args = parser.parse_args()
     root = _repo_root()
     client = MoltbookClient()
     store = TransactionStore(root)
-
     if args.command == "create":
         return cmd_create(client, store, args.payload)
     elif args.command == "verify":
