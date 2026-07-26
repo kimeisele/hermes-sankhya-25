@@ -6,11 +6,19 @@
   "content_type": "post | comment | profile | linked_artifact",
   "paraphrase": "<concise summary in your own words>",
   "claims": [
-    "<extracted claim 1>",
-    "<extracted claim 2>"
+    {
+      "claim_id": "<uuid>",
+      "text": "<extracted claim text>",
+      "status": "observed | verified | supported | inferred | proposed | disputed | unsupported | unknown",
+      "evidence_refs": [
+        "<url or identifier specific to this claim>"
+      ],
+      "verification_state": "unchecked | checked | failed",
+      "notes": "<optional rationale for status and verification>"
+    }
   ],
   "evidence_refs": [
-    "<url or identifier>"
+    "<url or identifier — source-level evidence common to multiple claims>"
   ],
   "inquiry_ids": [
     "<related inquiry id>"

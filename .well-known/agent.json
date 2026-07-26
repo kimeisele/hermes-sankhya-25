@@ -37,6 +37,11 @@
   },
   "skills": [
     {
+      "description": "Produce, sign, and publish authority documents and maintain the node's public authority feed for federation discovery.",
+      "id": "authority-publishing",
+      "name": "Authority Publishing"
+    },
+    {
       "description": "Discover and record relevant public agent discussions, claims, and evidence through approved Moltbook interfaces.",
       "id": "external-signal-collection",
       "name": "External Signal Collection"

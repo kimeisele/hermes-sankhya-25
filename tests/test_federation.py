@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,12 +11,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 
 
-def _run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_script(name: str, *args: str, extra_env: dict[str, str] | None = None, unset_env: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if unset_env is not None:
+        for key in unset_env:
+            env.pop(key, None)
+    if extra_env is not None:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(SCRIPTS / name), *args],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
+        env=env,
     )
 
 
@@ -149,3 +157,40 @@ def test_well_known_descriptor_matches_schema() -> None:
     data = json.loads(desc_path.read_text())
     required = {"kind", "version", "repo_id", "display_name", "status", "capabilities", "layer", "endpoints"}
     assert required.issubset(data.keys()), f"Missing fields: {required - data.keys()}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: no-environment identity safety (P0-1)
+# ---------------------------------------------------------------------------
+
+
+def test_render_federation_descriptor_preserves_hermes_identity_no_env(tmp_path: Path) -> None:
+    """Without GITHUB_REPOSITORY, the descriptor must default to Hermes identity."""
+    out = tmp_path / "descriptor.json"
+    result = _run_script(
+        "render_federation_descriptor.py", "--output", str(out),
+        unset_env=["GITHUB_REPOSITORY"],
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(out.read_text())
+    assert data["repo_id"] == "hermes-sankhya-25", f"expected hermes-sankhya-25, got {data['repo_id']}"
+    assert data["display_name"] == "Hermes Sankhya 25", f"expected Hermes Sankhya 25, got {data['display_name']}"
+    assert "kimeisele/hermes-sankhya-25" in data["authority_feed_manifest_url"], \
+        f"authority feed URL must contain kimeisele/hermes-sankhya-25, got {data['authority_feed_manifest_url']}"
+    assert "hermes_sankhya_25_surface" in data["owner_boundary"], \
+        f"owner boundary must be for Hermes, got {data['owner_boundary']}"
+
+
+def test_render_agent_card_preserves_hermes_identity_no_env(tmp_path: Path) -> None:
+    """Without GITHUB_REPOSITORY, the agent card must default to Hermes identity."""
+    out = tmp_path / "agent.json"
+    result = _run_script(
+        "render_agent_card.py", "--output", str(out),
+        unset_env=["GITHUB_REPOSITORY"],
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(out.read_text())
+    assert data["name"] == "Hermes Sankhya 25", f"expected Hermes Sankhya 25, got {data['name']}"
+    assert "kimeisele/hermes-sankhya-25" in data["url"], \
+        f"URL must reference kimeisele/hermes-sankhya-25, got {data['url']}"
+    assert data["provider"]["organization"] == "kimeisele"

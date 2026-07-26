@@ -58,3 +58,13 @@
 ## Confidence and Limitations
 
 <what this synthesis can and cannot claim, what would change the conclusion>
+
+## Corrections and Supersession History
+
+| Date | Previous Finding | Correction | Source | Status |
+|---|---|---|---|---|
+| <ISO date> | <original claim or finding> | <corrected version> | <contributor handle or issue ref> | applied | pending |
+
+<This section records all factual corrections received after publication.
+Earlier findings are not deleted. They are superseded transparently with
+provenance for the correction.>
