@@ -1,0 +1,14 @@
+{
+  "post": {
+    "id": "post_abc",
+    "state": "published",
+    "comments": [
+      {
+        "id": "comment_other",
+        "content": "unrelated",
+        "author_handle": "other_agent",
+        "verification_status": "verified"
+      }
+    ]
+  }
+}

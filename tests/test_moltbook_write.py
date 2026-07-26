@@ -164,6 +164,57 @@ def test_credential_token_never_persisted(tmp_path: Path, monkeypatch) -> None:
     assert "Authorization" not in raw
 
 
+def test_verify_blocks_no_credential_pending_unchanged(tmp_path: Path) -> None:
+    """Pending txn without credential: stays pending, zero verify, zero fetch."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: None)
+
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(transaction_id="t_pend_nocred", content_id="p1",
+                        content_type="post", parent_post_id="", url="https://x",
+                        raw_challenge_text="q", verification_code="c",
+                        challenge_instructions="", expires_at=time.time()+9999,
+                        raw_create_response={}, state="pending")
+    store.save(txn)
+
+    exit_code = m.cmd_verify(client, store, "t_pend_nocred", "42")
+    assert exit_code == 1
+    assert len(client.verify_calls) == 0
+    assert len(client.fetch_post_calls) == 0
+
+    loaded = store.load("t_pend_nocred")
+    assert loaded is not None
+    assert loaded.state == "pending"
+
+
+def test_verify_blocks_no_credential_attempted_unchanged(tmp_path: Path) -> None:
+    """Attempted txn without credential: stays attempted, zero verify, zero fetch."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: None)
+
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(transaction_id="t_att_nocred", content_id="p1",
+                        content_type="post", parent_post_id="", url="https://x",
+                        raw_challenge_text="q", verification_code="c",
+                        challenge_instructions="", expires_at=time.time()+9999,
+                        raw_create_response={}, state="attempted",
+                        submitted_answer="11", attempted_at=time.time())
+    store.save(txn)
+
+    exit_code = m.cmd_verify(client, store, "t_att_nocred", "11")
+    assert exit_code == 1
+    assert len(client.verify_calls) == 0
+    assert len(client.fetch_post_calls) == 0
+
+    loaded = store.load("t_att_nocred")
+    assert loaded is not None
+    assert loaded.state == "attempted"
+
+
 # ---------------------------------------------------------------------------
 # Transport: outbound body stripping
 # ---------------------------------------------------------------------------
@@ -299,6 +350,43 @@ def test_parse_fetch_comment_via_comments_array_directly() -> None:
     ]}
     obj = m._parse_fetch_response(raw, "comment", "c2")
     assert obj["verification_status"] == "unverified"
+
+
+def test_fetch_content_object_falls_back_to_comments_list(tmp_path: Path) -> None:
+    """When fetch_post() succeeds but the target comment is absent,
+    _fetch_content_object falls back to fetch_comments().
+
+    Both read calls occur exactly once.
+    """
+    m = _load_bridge_module()
+
+    # Parent post response: has comments[] but not the target
+    parent_without = _load_fixture("comment_fetch_missing_target.json")
+    # Comment list response: has the target
+    comment_list = _load_fixture("comment_list_verified.json")
+
+    client = _MockClient(
+        fetch_post_resp=parent_without,
+        fetch_comments_resp=comment_list,
+    )
+
+    txn = m.Transaction(
+        transaction_id="t_fb", content_id="comment_2b7e_20260726",
+        content_type="comment", parent_post_id="post_abc",
+        url="https://x", raw_challenge_text="q",
+        verification_code="c", challenge_instructions="",
+        expires_at=time.time() + 999, raw_create_response={},
+    )
+
+    obj = m._fetch_content_object(client, txn)
+    assert obj["id"] == "comment_2b7e_20260726"
+    assert obj["verification_status"] == "verified"
+
+    # Both calls happened exactly once
+    assert len(client.fetch_post_calls) == 1
+    assert client.fetch_post_calls[0] == "post_abc"
+    assert len(client.fetch_comments_calls) == 1
+    assert client.fetch_comments_calls[0] == "post_abc"
 
 
 # ---------------------------------------------------------------------------

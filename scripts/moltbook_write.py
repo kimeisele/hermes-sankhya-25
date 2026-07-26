@@ -488,6 +488,14 @@ def cmd_verify(client: MoltbookClient, store: TransactionStore,
         }))
         return 1
 
+    # --- credential guard — before any state change or network call ---
+    if _get_token() is None:
+        print(json.dumps({
+            "error": "No Moltbook credential. Set MOLTBOOK_TOKEN or configure ~/.config/moltbook/credentials.json",
+            "transaction_state": txn.state,
+        }))
+        return 1
+
     if txn.state == "attempted":
         return _reconcile_attempted(client, store, txn)
 
@@ -614,17 +622,22 @@ def _finalize_verification(client: MoltbookClient, store: TransactionStore,
 def _fetch_content_object(client: MoltbookClient, txn: Transaction) -> dict[str, Any]:
     if txn.content_type == "post":
         raw = client.fetch_post(txn.content_id)
-    else:
-        parent_id = txn.parent_post_id
-        if not parent_id:
-            raise RuntimeError("Comment transaction missing parent_post_id")
-        # Try parent post (with comments[]) first, then comment-list endpoint
-        try:
-            raw = client.fetch_post(parent_id)
-        except RuntimeError:
-            raw = client.fetch_comments(parent_id)
-        except RuntimeError:
-            raise
+        return _parse_fetch_response(raw, txn.content_type, txn.content_id)
+
+    # comment — try parent post, fall back to comment list
+    parent_id = txn.parent_post_id
+    if not parent_id:
+        raise RuntimeError("Comment transaction missing parent_post_id")
+
+    # First: fetch parent post (includes comments[])
+    raw = client.fetch_post(parent_id)
+    try:
+        return _parse_fetch_response(raw, txn.content_type, txn.content_id)
+    except RuntimeError:
+        pass  # comment not in parent response — fall back
+
+    # Second: fetch official comment list
+    raw = client.fetch_comments(parent_id)
     return _parse_fetch_response(raw, txn.content_type, txn.content_id)
 
 
