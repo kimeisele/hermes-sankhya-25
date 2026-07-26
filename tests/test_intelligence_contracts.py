@@ -214,47 +214,26 @@ def test_source_record_structure() -> None:
 
 
 def test_claim_status_vocabulary() -> None:
-    """Claim status in templates must only use the approved vocabulary from AGENTS.md."""
+    """Every claim in the source-record template must use a valid claim status."""
     path = REPO_ROOT / "templates" / "source-record.json"
     data = _load_json(path)
 
     for claim in data["claims"]:
-        status_field = claim.get("status", "")
-        # Template values may be compound hints like "observed | verified | ..."
-        for token in status_field.replace("|", " ").split():
-            token = token.strip().lower()
-            if token and token not in VALID_CLAIM_STATUSES:
-                # Allow compound documentation values in the template
-                # The actual status must be one of the valid values
-                pass
+        assert claim["status"] in VALID_CLAIM_STATUSES, \
+            f"Claim status '{claim['status']}' not in valid vocabulary: {sorted(VALID_CLAIM_STATUSES)}"
 
-    # Enumerate the full vocabulary from AGENTS.md
-    assert "observed" in VALID_CLAIM_STATUSES
-    assert "verified" in VALID_CLAIM_STATUSES
-    assert "supported" in VALID_CLAIM_STATUSES
-    assert "inferred" in VALID_CLAIM_STATUSES
-    assert "proposed" in VALID_CLAIM_STATUSES
-    assert "disputed" in VALID_CLAIM_STATUSES
-    assert "unsupported" in VALID_CLAIM_STATUSES
-    assert "unknown" in VALID_CLAIM_STATUSES
     assert len(VALID_CLAIM_STATUSES) == 8
 
 
 def test_claim_verification_state_vocabulary() -> None:
-    """Claim verification_state must use the approved three-value vocabulary."""
+    """Every claim in the source-record template must use a valid verification_state."""
     path = REPO_ROOT / "templates" / "source-record.json"
     data = _load_json(path)
 
     for claim in data["claims"]:
-        vs_field = claim.get("verification_state", "")
-        for token in vs_field.replace("|", " ").split():
-            token = token.strip().lower()
-            if token and token not in VALID_VERIFICATION_STATES:
-                pass  # template documentation value; skip
+        assert claim["verification_state"] in VALID_VERIFICATION_STATES, \
+            f"Claim verification_state '{claim['verification_state']}' not in valid vocabulary: {sorted(VALID_VERIFICATION_STATES)}"
 
-    assert "unchecked" in VALID_VERIFICATION_STATES
-    assert "checked" in VALID_VERIFICATION_STATES
-    assert "failed" in VALID_VERIFICATION_STATES
     assert len(VALID_VERIFICATION_STATES) == 3
 
 

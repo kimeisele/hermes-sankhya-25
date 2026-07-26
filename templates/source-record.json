@@ -9,11 +9,11 @@
     {
       "claim_id": "<uuid>",
       "text": "<extracted claim text>",
-      "status": "observed | verified | supported | inferred | proposed | disputed | unsupported | unknown",
+      "status": "observed",
       "evidence_refs": [
         "<url or identifier specific to this claim>"
       ],
-      "verification_state": "unchecked | checked | failed",
+      "verification_state": "unchecked",
       "notes": "<optional rationale for status and verification>"
     }
   ],

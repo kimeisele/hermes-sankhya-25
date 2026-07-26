@@ -74,11 +74,29 @@ Each source record is a JSON file under `sources/records/`:
   "observed_at": "<ISO timestamp>",
   "content_type": "post | comment | profile | linked_artifact",
   "paraphrase": "<concise summary>",
-  "claims": ["<extracted claim>", "..."],
-  "evidence_refs": ["<url or identifier>", "..."],
-  "inquiry_ids": ["<related inquiry>", "..."],
-  "security_flags": ["<flag if any>"],
-  "relevance_score": 0
+  "claims": [
+    {
+      "claim_id": "<uuid>",
+      "text": "<extracted claim text>",
+      "status": "observed",
+      "evidence_refs": ["<url or identifier specific to this claim>"],
+      "verification_state": "unchecked",
+      "notes": "<optional rationale>"
+    }
+  ],
+  "evidence_refs": ["<url or identifier — source-level>"],
+  "inquiry_ids": ["<related inquiry>"],
+  "relationship_id": "<agents.json key or null>",
+  "security_flags": [],
+  "relevance_score": 0,
+  "evaluation": {
+    "relevance": 0,
+    "novelty": 0,
+    "evidence": 0,
+    "falsifiability": 0,
+    "actionability": 0,
+    "notes": "<rationale for scores>"
+  }
 }
 ```
 

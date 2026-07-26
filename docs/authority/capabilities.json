@@ -14,7 +14,7 @@
     {
       "id": "authority-publishing",
       "name": "Authority Publishing",
-      "description": "Produce, sign, and publish authority documents and maintain the node's public authority feed for federation discovery."
+      "description": "Produce and publish versioned, SHA-256-addressed authority documents and maintain the node's public authority feed for federation discovery."
     },
     {
       "id": "external-signal-collection",

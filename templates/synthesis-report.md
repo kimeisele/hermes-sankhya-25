@@ -63,7 +63,7 @@
 
 | Date | Previous Finding | Correction | Source | Status |
 |---|---|---|---|---|
-| <ISO date> | <original claim or finding> | <corrected version> | <contributor handle or issue ref> | applied | pending |
+| <ISO date> | <original finding> | <corrected version> | <contributor handle or issue ref> | <applied or pending> |
 
 <This section records all factual corrections received after publication.
 Earlier findings are not deleted. They are superseded transparently with
