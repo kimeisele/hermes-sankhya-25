@@ -6,3 +6,5 @@ __pycache__/
 .agent-internet/
 # Node crypto keys — never commit
 data/federation/.node_keys.json
+# Moltbook write bridge — runtime transaction storage
+data/moltbook/
