@@ -19,7 +19,7 @@ def _load_capabilities(repo_root: Path) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default=".well-known/agent-federation.json")
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "kimeisele/agent-template"))
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "kimeisele/hermes-sankhya-25"))
     parser.add_argument("--status", default="active")
     parser.add_argument("--layer", default="node")
     parser.add_argument("--intent", nargs="*", default=["public_authority_page"])

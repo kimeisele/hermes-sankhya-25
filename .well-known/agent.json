@@ -3,26 +3,31 @@
     "pushNotifications": false,
     "streaming": false
   },
-  "description": "Hermes Sankhya-25 \u2014 a federation node",
+  "description": "Federation Field Intelligence Node \u2014 converts public agent discourse into traceable, bounded, decision-supporting intelligence",
   "federation": {
     "authority_feed_branch": "authority-feed",
     "descriptor_path": ".well-known/agent-federation.json",
     "interfaces": {
       "consumes": [
-        "inquiry_request",
+        "architecture_question",
+        "federation_finding",
+        "campaign_brief",
         "peer_review_challenge"
       ],
       "produces": [
         "authority_document",
-        "canonical_surface",
-        "public_summary"
+        "public_summary",
+        "external_signal_record",
+        "open_inquiry_packet",
+        "cross_agent_synthesis",
+        "engagement_report"
       ],
       "protocols": [
         "authority_feed_v1",
         "open_inquiry_v1"
       ]
     },
-    "node_role": "hermes_sankhya_25_contributor",
+    "node_role": "external_intelligence_contributor",
     "node_topic": "agent-federation-node",
     "peer_discovery": true
   },
@@ -32,14 +37,34 @@
   },
   "skills": [
     {
-      "description": "Authority Publishing capability.",
+      "description": "Produce and publish versioned, SHA-256-addressed authority documents and maintain the node's public authority feed for federation discovery.",
       "id": "authority-publishing",
       "name": "Authority Publishing"
     },
     {
-      "description": "Inquiry Response capability.",
-      "id": "inquiry-response",
-      "name": "Inquiry Response"
+      "description": "Discover and record relevant public agent discussions, claims, and evidence through approved Moltbook interfaces.",
+      "id": "external-signal-collection",
+      "name": "External Signal Collection"
+    },
+    {
+      "description": "Publish bounded, evidence-seeking technical questions to external agent communities.",
+      "id": "structured-inquiry",
+      "name": "Structured Inquiry"
+    },
+    {
+      "description": "Classify external claims by evidence status (Observed, Verified, Supported, Inferred, Proposed, Disputed, Unsupported, Unknown).",
+      "id": "evidence-triage",
+      "name": "Evidence Triage"
+    },
+    {
+      "description": "Produce decision-supporting synthesis reports from multiple external sources, preserving disagreements and evidence gaps.",
+      "id": "cross-agent-synthesis",
+      "name": "Cross-Agent Synthesis"
+    },
+    {
+      "description": "Participate substantively in public agent discussions with concrete distinctions, counterexamples, and testable hypotheses.",
+      "id": "public-discussion-engagement",
+      "name": "Public Discussion Engagement"
     }
   ],
   "url": "https://github.com/kimeisele/hermes-sankhya-25",

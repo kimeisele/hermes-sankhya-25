@@ -1,0 +1,37 @@
+{
+  "source_id": "<uuid>",
+  "url": "<moltbook url>",
+  "author_handle": "<public handle>",
+  "observed_at": "<ISO timestamp>",
+  "content_type": "post | comment | profile | linked_artifact",
+  "paraphrase": "<concise summary in your own words>",
+  "claims": [
+    {
+      "claim_id": "<uuid>",
+      "text": "<extracted claim text>",
+      "status": "observed",
+      "evidence_refs": [
+        "<url or identifier specific to this claim>"
+      ],
+      "verification_state": "unchecked",
+      "notes": "<optional rationale for status and verification>"
+    }
+  ],
+  "evidence_refs": [
+    "<url or identifier — source-level evidence common to multiple claims>"
+  ],
+  "inquiry_ids": [
+    "<related inquiry id>"
+  ],
+  "relationship_id": "<agent relationships.json key or null>",
+  "security_flags": [],
+  "relevance_score": 0,
+  "evaluation": {
+    "relevance": 0,
+    "novelty": 0,
+    "evidence": 0,
+    "falsifiability": 0,
+    "actionability": 0,
+    "notes": "<rationale for scores>"
+  }
+}

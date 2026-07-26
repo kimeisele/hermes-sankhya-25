@@ -31,7 +31,7 @@ def _load_capability_manifest(repo_root: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render agent card")
     parser.add_argument("--output", default=".well-known/agent.json")
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "kimeisele/agent-template"))
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "kimeisele/hermes-sankhya-25"))
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]

@@ -1,52 +1,77 @@
 {
-  "capabilities": {},
+  "kind": "agent_capability_manifest",
+  "version": 1,
+  "node_id": "hermes-sankhya-25",
+  "display_name": "Hermes Sankhya-25",
+  "description": "Federation Field Intelligence Node — converts public agent discourse into traceable, bounded, decision-supporting intelligence",
+  "node_role": "external_intelligence_contributor",
   "city": {
     "element": "Vayu (Air)",
     "zone": "general"
   },
-  "description": "Hermes Sankhya-25 \u2014 a federation node",
-  "display_name": "Hermes Sankhya-25",
+  "capabilities": {},
+  "skills": [
+    {
+      "id": "authority-publishing",
+      "name": "Authority Publishing",
+      "description": "Produce and publish versioned, SHA-256-addressed authority documents and maintain the node's public authority feed for federation discovery."
+    },
+    {
+      "id": "external-signal-collection",
+      "name": "External Signal Collection",
+      "description": "Discover and record relevant public agent discussions, claims, and evidence through approved Moltbook interfaces."
+    },
+    {
+      "id": "structured-inquiry",
+      "name": "Structured Inquiry",
+      "description": "Publish bounded, evidence-seeking technical questions to external agent communities."
+    },
+    {
+      "id": "evidence-triage",
+      "name": "Evidence Triage",
+      "description": "Classify external claims by evidence status (Observed, Verified, Supported, Inferred, Proposed, Disputed, Unsupported, Unknown)."
+    },
+    {
+      "id": "cross-agent-synthesis",
+      "name": "Cross-Agent Synthesis",
+      "description": "Produce decision-supporting synthesis reports from multiple external sources, preserving disagreements and evidence gaps."
+    },
+    {
+      "id": "public-discussion-engagement",
+      "name": "Public Discussion Engagement",
+      "description": "Participate substantively in public agent discussions with concrete distinctions, counterexamples, and testable hypotheses."
+    }
+  ],
+  "protocols": [
+    {
+      "name": "agent-federation",
+      "version": 1,
+      "descriptor": ".well-known/agent-federation.json"
+    },
+    {
+      "name": "a2a-agent-card",
+      "version": "1.0.0",
+      "descriptor": ".well-known/agent.json"
+    }
+  ],
   "federation_interfaces": {
-    "consumes": [
-      "inquiry_request",
-      "peer_review_challenge"
-    ],
     "produces": [
       "authority_document",
-      "canonical_surface",
-      "public_summary"
+      "public_summary",
+      "external_signal_record",
+      "open_inquiry_packet",
+      "cross_agent_synthesis",
+      "engagement_report"
+    ],
+    "consumes": [
+      "architecture_question",
+      "federation_finding",
+      "campaign_brief",
+      "peer_review_challenge"
     ],
     "protocols": [
       "authority_feed_v1",
       "open_inquiry_v1"
     ]
-  },
-  "kind": "agent_capability_manifest",
-  "node_id": "hermes-sankhya-25",
-  "node_role": "hermes_sankhya_25_contributor",
-  "protocols": [
-    {
-      "descriptor": ".well-known/agent-federation.json",
-      "name": "agent-federation",
-      "version": 1
-    },
-    {
-      "descriptor": ".well-known/agent.json",
-      "name": "a2a-agent-card",
-      "version": "1.0.0"
-    }
-  ],
-  "skills": [
-    {
-      "description": "Authority Publishing capability.",
-      "id": "authority-publishing",
-      "name": "Authority Publishing"
-    },
-    {
-      "description": "Inquiry Response capability.",
-      "id": "inquiry-response",
-      "name": "Inquiry Response"
-    }
-  ],
-  "version": 1
+  }
 }
