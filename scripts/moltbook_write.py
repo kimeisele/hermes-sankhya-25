@@ -630,11 +630,11 @@ def _fetch_content_object(client: MoltbookClient, txn: Transaction) -> dict[str,
         raise RuntimeError("Comment transaction missing parent_post_id")
 
     # First: fetch parent post (includes comments[])
-    raw = client.fetch_post(parent_id)
     try:
+        raw = client.fetch_post(parent_id)
         return _parse_fetch_response(raw, txn.content_type, txn.content_id)
     except RuntimeError:
-        pass  # comment not in parent response — fall back
+        pass  # fetch or extraction failed — fall back
 
     # Second: fetch official comment list
     raw = client.fetch_comments(parent_id)

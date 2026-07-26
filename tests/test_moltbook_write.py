@@ -389,6 +389,45 @@ def test_fetch_content_object_falls_back_to_comments_list(tmp_path: Path) -> Non
     assert client.fetch_comments_calls[0] == "post_abc"
 
 
+def test_fetch_content_object_falls_back_when_parent_fetch_raises(tmp_path: Path) -> None:
+    """When fetch_post() raises, _fetch_content_object falls back to fetch_comments().
+
+    One parent-fetch call (raises), one comment-list call, correct comment selected.
+    """
+    m = _load_bridge_module()
+
+    parent_resp = {}  # unused — fetch_post will raise
+    comment_list = _load_fixture("comment_list_verified.json")
+
+    client = _MockClient(
+        fetch_post_resp=parent_resp,
+        fetch_comments_resp=comment_list,
+    )
+
+    # Replace fetch_post to raise
+    def _raising_fetch(post_id):
+        client.fetch_post_calls.append(post_id)
+        raise RuntimeError("parent fetch failed")
+    client.fetch_post = _raising_fetch
+
+    txn = m.Transaction(
+        transaction_id="t_fb_raise", content_id="comment_2b7e_20260726",
+        content_type="comment", parent_post_id="post_abc",
+        url="https://x", raw_challenge_text="q",
+        verification_code="c", challenge_instructions="",
+        expires_at=time.time() + 999, raw_create_response={},
+    )
+
+    obj = m._fetch_content_object(client, txn)
+    assert obj["id"] == "comment_2b7e_20260726"
+    assert obj["verification_status"] == "verified"
+
+    assert len(client.fetch_post_calls) == 1
+    assert client.fetch_post_calls[0] == "post_abc"
+    assert len(client.fetch_comments_calls) == 1
+    assert client.fetch_comments_calls[0] == "post_abc"
+
+
 # ---------------------------------------------------------------------------
 # Malformed-create persistence (content identity always saved)
 # ---------------------------------------------------------------------------
