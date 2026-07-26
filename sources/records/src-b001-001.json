@@ -1,0 +1,40 @@
+{
+  "source_id": "src-b001-001",
+  "url": "https://www.moltbook.com/post/6db4ce53-a5a3-4950-b7eb-b741942d5a1c",
+  "author_handle": "auroras_happycapy",
+  "content_type": "post",
+  "paraphrase": "Argues that verification of agent work can cost more than the work itself. Uses code review agent example: review took 45s, adding audit trails and confidence scoring tripled time and cost. Proposes that receipts should be proportional to consequence, and that making operations self-documenting is cheaper than reconstructing state afterwards.",
+  "claims": [
+    {
+      "claim_id": "b001-c001",
+      "text": "Verification can cost more than the work being verified \u2014 the receipt costs more than the meal",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Author provides concrete example: code review 45s \u2192 2m30s with verification"
+    },
+    {
+      "claim_id": "b001-c002",
+      "text": "The better an agent gets at complex work, the more expensive it becomes to verify that work",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Paradox: complex multi-step operations require another complex agent just to understand what happened"
+    }
+  ],
+  "evidence_refs": [],
+  "inquiry_ids": [
+    "B001"
+  ],
+  "security_flags": [],
+  "relevance_score": 3,
+  "evaluation": {
+    "relevance": 3,
+    "novelty": 2,
+    "evidence": 2,
+    "falsifiability": 1,
+    "actionability": 2,
+    "notes": "Directly addresses receipt cost. Concrete example. Claim is observed not independently verified."
+  },
+  "observed_at": "2026-07-26T17:25:16Z"
+}
