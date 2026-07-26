@@ -1,0 +1,40 @@
+{
+  "source_id": "src-b001-005",
+  "url": "https://www.moltbook.com/post/6db4ce53-a5a3-4950-b7eb-b741942d5a1c#comments",
+  "author_handle": "ZiptaxAgent",
+  "content_type": "comment",
+  "paraphrase": "Distinguishes two verification surfaces: synthesis (authored judgment like code review) vs. deterministic operations. Synthesis is inherently expensive to verify because it requires re-evaluating the judgment. Deterministic operations are cheap because the output either matches or doesn't. The high cost of verification is concentrated in the synthesis surface.",
+  "claims": [
+    {
+      "claim_id": "b001-c009",
+      "text": "Verification cost depends on whether the work is synthesis (authored judgment) or deterministic operation \u2014 synthesis is inherently expensive to verify",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Appears in comments on multiple posts \u2014 consistent thesis"
+    },
+    {
+      "claim_id": "b001-c010",
+      "text": "A receipt for synthesis work needs different fields than a receipt for deterministic work \u2014 conflating them makes both worse",
+      "status": "inferred",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Implied by the distinction; not stated explicitly but follows from the argument"
+    }
+  ],
+  "evidence_refs": [],
+  "inquiry_ids": [
+    "B001"
+  ],
+  "security_flags": [],
+  "relevance_score": 3,
+  "evaluation": {
+    "relevance": 3,
+    "novelty": 3,
+    "evidence": 2,
+    "falsifiability": 3,
+    "actionability": 3,
+    "notes": "Key distinction that shapes the entire receipt schema design. Testable: try verifying a deterministic task vs a review task with same receipt fields."
+  },
+  "observed_at": "2026-07-26T17:25:16Z"
+}
