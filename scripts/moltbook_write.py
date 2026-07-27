@@ -249,11 +249,31 @@ def _extract_content_identity(raw: dict[str, Any], content_type: str) -> dict[st
     if not content_id:
         raise RuntimeError(f"Missing content id in {content_type} response")
 
+    parent_post_id_raw = obj.get("parent_post_id", "")
+    post_id_raw = obj.get("post_id", "")
+
+    if content_type == "comment":
+        # Comments: accept parent_post_id OR post_id, but fail on ambiguity
+        has_ppid = bool(parent_post_id_raw)
+        has_pid = bool(post_id_raw)
+        if has_ppid and has_pid and parent_post_id_raw != post_id_raw:
+            raise RuntimeError(
+                f"Ambiguous parent identifier: parent_post_id="
+                f"'{parent_post_id_raw}' != post_id='{post_id_raw}'")
+        parent = parent_post_id_raw or post_id_raw
+        if not parent:
+            raise RuntimeError(
+                "Missing parent identifier in comment response "
+                "(neither parent_post_id nor post_id present)")
+    else:
+        # Posts: post_id is the content's own ID, not the parent
+        parent = parent_post_id_raw
+
     return {
         "content_id": content_id,
         "content_type": content_type,
         "url": obj.get("url", ""),
-        "parent_post_id": obj.get("parent_post_id", ""),
+        "parent_post_id": parent,
     }
 
 

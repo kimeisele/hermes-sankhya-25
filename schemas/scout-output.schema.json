@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScoutOutput",
+  "type": "object",
+  "required": ["candidates_found", "candidates"],
+  "properties": {
+    "candidates_found": {"type": "integer", "minimum": 0},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {"type": "string"},
+          "id": {"type": "string"},
+          "author_handle": {"type": "string"},
+          "content_type": {"type": "string"}
+        }
+      }
+    }
+  }
+}

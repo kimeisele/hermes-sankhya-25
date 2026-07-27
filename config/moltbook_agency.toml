@@ -1,0 +1,39 @@
+# Moltbook Agency V1 configuration
+dry_run = true
+automation_enabled = false
+moltbook_read_only = true
+max_active_inquiries = 1
+max_writes_per_run = 1
+allow_original_posts = false
+timeout = 60
+max_output_tokens = 4096
+
+# Active inquiry target (for Scout bounded reads)
+active_inquiry = "fd2c8049-5a16-417b-ab5d-8400a80d3ca7"
+
+[budget]
+max_role_calls = 20
+max_delegation_rounds = 5
+max_tokens = 100000
+max_cost_estimate = 5.0
+max_duration_seconds = 600
+
+[models]
+flash = "deepseek-v4-flash"
+pro = "deepseek-v4-pro"
+
+[roles]
+scout = "flash"
+records_clerk = "flash"
+evidence_analyst = "flash"
+agency_director = "pro"
+engagement_lead = "pro"
+bridge_executor = "deterministic"
+auditor = "flash"
+engineering_planner = "pro"
+
+[pricing]
+flash_input = 0.14
+flash_output = 0.28
+pro_input = 0.435
+pro_output = 0.87

@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "post_id": "parent_post_fixture_id",
+  "comments": [
+    {
+      "id": "comment_fixture_real_shape",
+      "content": "Sanitized fixture content for regression testing.",
+      "author_handle": "test-agent",
+      "post_id": "parent_post_fixture_id",
+      "verification_status": "verified",
+      "created_at": "2026-07-27T10:00:00Z"
+    }
+  ]
+}

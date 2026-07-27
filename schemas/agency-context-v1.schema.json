@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-sankhya-25/agency-context-v1.schema.json",
+  "title": "AgencyContextV1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "trigger", "shift", "started_at", "repository", "base_sha", "campaign", "policy", "budget", "status"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "workflow_run_id": {"type": ["string", "null"]},
+    "trigger": {"type": "string", "enum": ["scheduled", "manual", "dispatch"]},
+    "shift": {"type": "string", "enum": ["morning", "evening"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "repository": {"type": "string"},
+    "base_sha": {"type": "string", "minLength": 40, "maxLength": 40},
+    "campaign": {"type": "object"},
+    "policy": {"type": "object"},
+    "budget": {
+      "type": "object",
+      "required": ["max_role_calls", "max_delegation_rounds", "max_tokens", "max_cost_estimate", "max_duration_seconds"],
+      "properties": {
+        "max_role_calls": {"type": "integer", "minimum": 1},
+        "max_delegation_rounds": {"type": "integer", "minimum": 0},
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "max_cost_estimate": {"type": "number", "minimum": 0},
+        "max_duration_seconds": {"type": "integer", "minimum": 1},
+        "role_calls_used": {"type": "integer", "default": 0},
+        "delegation_rounds_used": {"type": "integer", "default": 0},
+        "tokens_used": {"type": "integer", "default": 0},
+        "cost_estimate_used": {"type": "number", "default": 0}
+      }
+    },
+    "inbox": {"type": "array", "items": {"type": "object"}},
+    "source_candidates": {"type": "array", "items": {"type": "object"}},
+    "accepted_evidence": {"type": "array", "items": {"type": "object"}},
+    "agent_profiles": {"type": "object"},
+    "decisions": {"type": "array", "items": {"type": "object"}},
+    "work_queue": {"type": "array", "items": {"type": "string"}},
+    "handoffs": {"type": "array", "items": {"type": "object"}},
+    "engagement_proposals": {"type": "array", "items": {"type": "object"}},
+    "engineering_proposals": {"type": "array", "items": {"type": "object"}},
+    "transactions": {"type": "array", "items": {"type": "object"}},
+    "incidents": {"type": "array", "items": {"type": "object"}},
+    "audit": {"type": "object"},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+    "status": {"type": "string", "enum": ["initialized", "running", "completed", "failed", "budget_exhausted"]},
+    "completed_at": {"type": ["string", "null"], "format": "date-time"}
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": ["event_type", "timestamp", "sequence"],
+      "properties": {
+        "event_type": {"type": "string"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "data": {"type": "object"},
+        "provenance": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
