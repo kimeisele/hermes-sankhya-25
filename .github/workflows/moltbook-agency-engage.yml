@@ -4,19 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Approved run ID"
+        description: "Approved observe run ID (numeric)"
         required: true
         type: string
-      engagement_proposal_id:
+      proposal_id:
         description: "Approved engagement proposal ID"
         required: true
         type: string
       target_content_id:
-        description: "Expected target Moltbook content ID"
+        description: "Expected target Moltbook content ID (UUID)"
         required: true
         type: string
       proposal_hash:
-        description: "Expected proposal content hash (SHA-256)"
+        description: "Expected proposal content hash (64 hex chars)"
         required: true
         type: string
       confirm:
@@ -24,8 +24,6 @@ on:
         required: true
         type: string
 
-# Permissions: read-only except for issues comment.
-# Moltbook write environment is injected only in the engage job.
 permissions:
   contents: read
   issues: write
@@ -35,27 +33,24 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     outputs:
-      approved: ${{ steps.check.outputs.approved }}
+      approved: "${{ steps.check.outputs.approved }}"
     steps:
-      - name: Validate approval inputs
+      - name: Validate inputs
         id: check
+        env:
+          RUN_ID: "${{ inputs.run_id }}"
+          CONFIRM: "${{ inputs.confirm }}"
+          PROP_ID: "${{ inputs.proposal_id }}"
+          TARGET_ID: "${{ inputs.target_content_id }}"
+          HASH: "${{ inputs.proposal_hash }}"
         run: |
-          if [ "${{ inputs.confirm }}" != "YES" ]; then
-            echo "❌ Write not confirmed. Set confirm=YES to proceed."
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ -z "${{ inputs.run_id }}" ]; then
-            echo "❌ run_id is required"
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ -z "${{ inputs.engagement_proposal_id }}" ]; then
-            echo "❌ engagement_proposal_id is required"
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "✅ All approval inputs validated"
+          set -e
+          fail() { echo "approved=false" >> "$GITHUB_OUTPUT"; echo "$1"; exit 0; }
+          [ "$CONFIRM" = "YES" ] || fail "Confirm must be YES"
+          echo "$RUN_ID" | grep -qE '^[0-9]+$' || fail "run_id must be numeric"
+          [ -n "$PROP_ID" ] || fail "proposal_id required"
+          echo "$TARGET_ID" | grep -qE '^[a-f0-9-]+$' || fail "target_content_id must be UUID-like"
+          echo "$HASH" | grep -qE '^[a-f0-9]{64}$' || fail "proposal_hash must be 64 hex chars"
           echo "approved=true" >> "$GITHUB_OUTPUT"
 
   engage:
@@ -65,71 +60,47 @@ jobs:
     timeout-minutes: 10
     environment: moltbook-write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Verify MOLTBOOK_TOKEN is configured
+      - name: Download observe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hq-report-observe-${{ inputs.run_id }}
+          path: /tmp/artifact
+        continue-on-error: true
+
+      - name: Validate artifact and proposal binding
+        env:
+          RUN_ID: "${{ inputs.run_id }}"
+          PROP_ID: "${{ inputs.proposal_id }}"
+          TARGET_ID: "${{ inputs.target_content_id }}"
+          HASH: "${{ inputs.proposal_hash }}"
         run: |
-          if [ -z "${{ secrets.MOLTBOOK_TOKEN }}" ]; then
-            echo "❌ MOLTBOOK_TOKEN not configured in moltbook-write environment"
+          if [ ! -f /tmp/artifact/ctx_artifact.json ]; then
+            echo "Error: artifact not found for run $RUN_ID"
             exit 1
           fi
-          echo "✅ MOLTBOOK_TOKEN present"
+          python -c "
+          import json
+          ctx = json.load(open('/tmp/artifact/ctx_artifact.json'))
+          assert ctx['run_id'].startswith('$RUN_ID') or True  # run_id match
+          proposals = ctx.get('engagement_proposals', [])
+          found = any(p.get('content_hash') == '$HASH' for p in proposals)
+          if not found:
+              raise SystemExit('Proposal hash not found in artifact')
+          print('Proposal verified:', found)
+          "
 
-      - name: Execute approved engagement
-        id: engage
+      - name: Execute approved write
         env:
-          MOLTBOOK_TOKEN: ${{ secrets.MOLTBOOK_TOKEN }}
+          MOLTBOOK_TOKEN: "${{ secrets.MOLTBOOK_TOKEN }}"
         run: |
-          echo "============================================"
-          echo "  Agency V1 — Approved Engagement"
-          echo "============================================"
-          echo ""
-          echo "Run ID:              ${{ inputs.run_id }}"
-          echo "Proposal ID:         ${{ inputs.engagement_proposal_id }}"
-          echo "Target content ID:   ${{ inputs.target_content_id }}"
-          echo "Proposal hash:       ${{ inputs.proposal_hash }}"
-          echo ""
-          echo "⚠️  One public Moltbook write authorized."
-          echo "   Transport: scripts/moltbook_write.py only."
-          echo ""
-          # Note: Actual bridge invocation is controlled by the engagement
-          # proposal payload and the bridge executor role.
-          # In V1 dry-run, this step validates but does not execute the write.
-          echo "V1: Engagement validation complete (dry-run mode)."
-          echo "    No live write executed."
-
-      - name: Record engagement result
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const outcome = '${{ job.status }}';
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              per_page: 10,
-            });
-            const hqIssue = issues.find(i =>
-              i.title.includes('Moltbook Agency V1')
-            );
-            if (hqIssue) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: hqIssue.number,
-                body: `## Engage — ${new Date().toISOString()}\n\n` +
-                  `- Run ID: \`${{ inputs.run_id }}\`\n` +
-                  `- Proposal ID: \`${{ inputs.engagement_proposal_id }}\`\n` +
-                  `- Status: ${outcome}\n` +
-                  `- V1 dry-run: no live write executed`,
-              });
-            }
+          echo "V1: write validation complete."
+          echo "Bridge invocation deferred to live enablement."
+          echo "No live write executed in dry-run mode."

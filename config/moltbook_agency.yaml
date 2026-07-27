@@ -1,6 +1,4 @@
 # Moltbook Agency V1 — default configuration
-# All values are safe defaults. Enable features explicitly.
-
 dry_run: true
 automation_enabled: false
 moltbook_read_only: true
@@ -10,7 +8,6 @@ max_writes_per_run: 1
 require_approval_for_write: true
 allow_original_posts: false
 
-# Budget limits
 budget:
   max_role_calls: 20
   max_delegation_rounds: 5
@@ -18,12 +15,10 @@ budget:
   max_cost_estimate: 5.0
   max_duration_seconds: 600
 
-# Model routing
 models:
-  flash: deepseek-flash
-  pro: deepseek-pro
+  flash: deepseek-v4-flash
+  pro: deepseek-v4-pro
 
-# Role assignments
 roles:
   scout: flash
   records_clerk: flash

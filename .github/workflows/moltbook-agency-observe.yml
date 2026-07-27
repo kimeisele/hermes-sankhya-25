@@ -2,9 +2,8 @@ name: Moltbook Agency — Observe
 
 on:
   schedule:
-    # Twice-daily at non-round-minute times to avoid stampeding
-    - cron: "13 7 * * *"   # 07:13 UTC (morning)
-    - cron: "47 19 * * *"  # 19:47 UTC (evening)
+    - cron: "13 7 * * *"
+    - cron: "47 19 * * *"
   workflow_dispatch:
     inputs:
       shift:
@@ -12,18 +11,12 @@ on:
         required: false
         default: "morning"
         type: choice
-        options:
-          - morning
-          - evening
+        options: [morning, evening]
 
-# Repository-wide concurrency: two shifts cannot overlap.
-# Do not cancel an in-progress shift.
 concurrency:
   group: moltbook-agency-observe
   cancel-in-progress: false
 
-# Permissions: read-only for repository contents.
-# No write access, no PR access, no Moltbook write environment.
 permissions:
   contents: read
   issues: write
@@ -34,42 +27,55 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Validate configuration
-        id: validate
+      - name: Resolve base SHA
+        id: sha
         run: |
-          echo "=== Agency V1 Configuration Validation ==="
-          echo "dry_run: true"
-          echo "automation_enabled: false"
-          echo "moltbook_read_only: true"
-          echo ""
-          echo "✅ Configuration valid — dry-run mode active."
-          echo "   No Moltbook writes will occur."
-          echo "   No repository modifications will occur."
+          SHA=$(git rev-parse HEAD)
+          if [ -z "$SHA" ] || [ ${#SHA} -ne 40 ]; then
+            echo "Error: cannot resolve valid base SHA"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Run observe shift (dry-run)
+      - name: Run observe shift
         id: observe
+        env:
+          SHIFT: "${{ inputs.shift || 'morning' }}"
         run: |
+          python -m pip install jsonschema --quiet
           python scripts/moltbook_agency.py \
-            --shift "${{ inputs.shift || 'morning' }}" \
+            --mode dry-run \
+            --shift "$SHIFT" \
             --trigger "${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}" \
-            --dry-run \
             --output /tmp/hq_report.md
 
-      - name: Upload HQ report artifact
-        uses: actions/upload-artifact@v4
+      - name: Generate structured CTX artifact
+        run: |
+          python -c "
+          import json, sys
+          sys.path.insert(0, '.')
+          from agency.orchestrator import AgencyOrchestrator, build_role_registry
+          orch = AgencyOrchestrator(trigger='scheduled', shift='morning',
+                                    role_registry=build_role_registry())
+          ctx = orch.run()
+          with open('/tmp/ctx_artifact.json', 'w') as f:
+              json.dump(ctx.to_dict(sanitize=True), f, indent=2, default=str)
+          "
+
+      - uses: actions/upload-artifact@v4
         with:
           name: hq-report-observe-${{ github.run_id }}
-          path: /tmp/hq_report.md
+          path: |
+            /tmp/hq_report.md
+            /tmp/ctx_artifact.json
           retention-days: 7
 
       - name: Update coordination issue
@@ -79,43 +85,15 @@ jobs:
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('/tmp/hq_report.md', 'utf8');
-
-            // Find the coordination issue by title
             const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: [],
-              per_page: 10,
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', per_page: 10
             });
-
-            const hqIssue = issues.find(i =>
-              i.title.includes('Moltbook Agency V1')
-            );
-
-            if (hqIssue) {
+            const hq = issues.find(i => i.title.includes('Moltbook Agency V1'));
+            if (hq) {
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: hqIssue.number,
-                body: `## Observe Shift — ${new Date().toISOString()}\n\n${report.substring(0, 60000)}`,
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: hq.number,
+                body: `## Observe — ${new Date().toISOString()}\n\n${report.substring(0, 60000)}`
               });
-              console.log(`Updated issue #${hqIssue.number}`);
-            } else {
-              console.log('No coordination issue found — skipping update');
             }
-
-      - name: Dry-run complete
-        run: |
-          echo ""
-          echo "============================================"
-          echo "  Agency V1 Observe Shift Complete (dry-run)"
-          echo "============================================"
-          echo ""
-          echo "No Moltbook writes occurred."
-          echo "No repository modifications occurred."
-          echo ""
-          echo "To enable live observation:"
-          echo "  1. Set automation_enabled: true in config"
-          echo "  2. Set moltbook_read_only: false"
-          echo "  3. Configure MOLTBOOK_TOKEN in secrets"
