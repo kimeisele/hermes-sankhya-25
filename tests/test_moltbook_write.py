@@ -732,6 +732,125 @@ def test_comment_rejects_blank_content(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bridge comment-refetch regression — real API post_id shape
+# ---------------------------------------------------------------------------
+
+def test_comment_create_parses_real_post_id_shape(tmp_path: Path) -> None:
+    """Comment create response with post_id (not parent_post_id) is parsed."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    resp = _load_fixture("comment_create_real_shape.json")
+    identity = m._extract_content_identity(resp, "comment")
+    assert identity["content_id"] == "comment_fixture_real_shape"
+    assert identity["parent_post_id"] == "parent_post_fixture_id"
+
+
+def test_comment_refetch_reaches_verified_with_real_shape(tmp_path: Path) -> None:
+    """Full create → verify → refetch cycle with real post_id shape reaches verified."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    create = dict(_load_fixture("comment_create_real_shape.json"))
+    create["comment"]["verification"]["expires_at"] = "2099-07-27T10:05:00Z"
+
+    client = _MockClient(
+        create_comment_resp=create,
+        verify_resp=_load_fixture("verify_accepted.json"),
+        fetch_post_resp=_load_fixture("comment_fetch_real_shape_verified.json"),
+    )
+    store = m.TransactionStore(tmp_path)
+
+    assert m.cmd_create(client, store, json.dumps({
+        "content": "regression test", "type": "comment",
+        "parent_post_id": "parent_post_fixture_id",
+    })) == 0
+
+    txn_id = next(iter(json.loads(
+        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+
+    assert m.cmd_verify(client, store, txn_id, "4") == 0
+    txn = store.load(txn_id)
+    assert txn is not None
+    assert txn.state == "verified"
+    assert txn.parent_post_id == "parent_post_fixture_id"
+
+
+def test_comment_refetch_falls_back_to_list_with_real_shape(tmp_path: Path) -> None:
+    """Fallback comment-list path works with real post_id shape."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    create = dict(_load_fixture("comment_create_real_shape.json"))
+    create["comment"]["verification"]["expires_at"] = "2099-07-27T10:05:00Z"
+
+    # fetch_post returns a post without the target comment → triggers fallback
+    parent_without = {"success": True, "post": {"id": "parent_post_fixture_id", "comments": []}}
+
+    client = _MockClient(
+        create_comment_resp=create,
+        verify_resp=_load_fixture("verify_accepted.json"),
+        fetch_post_resp=parent_without,
+        fetch_comments_resp=_load_fixture("comment_list_real_shape_verified.json"),
+    )
+    store = m.TransactionStore(tmp_path)
+
+    assert m.cmd_create(client, store, json.dumps({
+        "content": "regression test", "type": "comment",
+        "parent_post_id": "parent_post_fixture_id",
+    })) == 0
+
+    txn_id = next(iter(json.loads(
+        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+
+    assert m.cmd_verify(client, store, txn_id, "4") == 0
+    txn = store.load(txn_id)
+    assert txn is not None
+    assert txn.state == "verified"
+
+
+def test_comment_malformed_real_shape_fails_closed(tmp_path: Path) -> None:
+    """Malformed response with neither post_id nor parent_post_id raises."""
+    m = _load_bridge_module()
+    identity = m._extract_content_identity({
+        "success": True,
+        "comment": {"id": "c1", "content": "x"},
+    }, "comment")
+    # parent_post_id should be empty string since neither field exists
+    assert identity["parent_post_id"] == ""
+
+
+def test_comment_no_duplicate_verify_with_real_shape(tmp_path: Path) -> None:
+    """Second verify on real-shape transaction is rejected (terminal state)."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    create = dict(_load_fixture("comment_create_real_shape.json"))
+    create["comment"]["verification"]["expires_at"] = "2099-07-27T10:05:00Z"
+
+    client = _MockClient(
+        create_comment_resp=create,
+        verify_resp=_load_fixture("verify_accepted.json"),
+        fetch_post_resp=_load_fixture("comment_fetch_real_shape_verified.json"),
+    )
+    store = m.TransactionStore(tmp_path)
+
+    assert m.cmd_create(client, store, json.dumps({
+        "content": "regression test", "type": "comment",
+        "parent_post_id": "parent_post_fixture_id",
+    })) == 0
+
+    txn_id = next(iter(json.loads(
+        (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
+    assert m.cmd_verify(client, store, txn_id, "4") == 0
+    # second verify blocked
+    assert m.cmd_verify(client, store, txn_id, "4") == 1
+
+
+# ---------------------------------------------------------------------------
 # Verify — terminal and expiry
 # ---------------------------------------------------------------------------
 

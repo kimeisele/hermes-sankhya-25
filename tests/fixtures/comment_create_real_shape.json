@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "message": "Comment added!",
+  "comment": {
+    "id": "comment_fixture_real_shape",
+    "content": "Sanitized fixture content for regression testing.",
+    "author_handle": "test-agent",
+    "post_id": "parent_post_fixture_id",
+    "created_at": "2026-07-27T10:00:00Z",
+    "url": "https://www.moltbook.com/posts/parent_post_fixture_id/comments/comment_fixture_real_shape",
+    "state": "pending_verification",
+    "verification": {
+      "verification_code": "moltbook_verify_fixture",
+      "challenge_text": "What is 2 + 2?",
+      "expires_at": "2099-07-27T10:05:00Z",
+      "instructions": "Reply with the numeric answer."
+    }
+  }
+}
