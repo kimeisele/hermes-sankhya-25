@@ -10,6 +10,7 @@ import datetime as _dt
 import hashlib
 import json
 import subprocess
+import uuid as _uuid
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,36 @@ class ScoutRole:
     def __call__(self, ctx_view: dict[str, Any]) -> RoleResult:
         inbox = ctx_view.get("inbox", [])
         existing = set(ctx_view.get("accepted_evidence_ids", []))
+
+        # Bounded Moltbook read if reader is available and inbox is empty
+        if self._moltbook and not inbox:
+            target_id = ctx_view.get("campaign", {}).get("active_inquiry", "")
+            if target_id:
+                try:
+                    post = self._moltbook.fetch_post(target_id)
+                    comments_resp = self._moltbook.fetch_comments(target_id)
+                    items: list[dict[str, Any]] = []
+                    # Add post itself
+                    p = post.get("post", post)
+                    if isinstance(p, dict) and p.get("id"):
+                        items.append({
+                            "id": p["id"], "url": f"https://www.moltbook.com/post/{p['id']}",
+                            "author_handle": p.get("author", {}).get("name", "unknown"),
+                            "content_type": "post", "untrusted": True,
+                        })
+                    # Add comments
+                    for c in comments_resp.get("comments", []):
+                        if isinstance(c, dict) and c.get("id"):
+                            items.append({
+                                "id": c["id"],
+                                "url": f"https://www.moltbook.com/post/{target_id}#comments",
+                                "author_handle": c.get("author", {}).get("name", "unknown"),
+                                "content_type": "comment", "untrusted": True,
+                            })
+                    inbox = items
+                except Exception:
+                    pass  # read failure → empty inbox, deterministic NOOP
+
         new = [i for i in inbox if i.get("id") not in existing]
         if not new:
             return RoleResult(self.ROLE, "NOOP", data={"candidates_found": 0})
@@ -241,8 +272,13 @@ class EngagementLeadRole:
         self._adapter = adapter
 
     def __call__(self, ctx_view: dict[str, Any]) -> RoleResult:
-        proposals = ctx_view.get("engagement_proposals", [])
-        if not proposals:
+        # Build from Director brief + evidence + inquiry
+        evidence = ctx_view.get("accepted_evidence", [])
+        decisions = ctx_view.get("decisions", [])
+        campaign = ctx_view.get("campaign", {})
+        target_id = campaign.get("active_inquiry", "")
+
+        if not evidence and not decisions:
             return RoleResult(self.ROLE, "NOOP")
 
         if self._adapter:
@@ -251,14 +287,32 @@ class EngagementLeadRole:
                 return RoleResult(self.ROLE, "FAIL_CLOSED",
                                   fail_reason=f"Engagement model failed: {result.error}")
             prop = result.data.get("proposal", result.data)
+            prop.setdefault("proposal_id", _uuid.uuid4().hex[:12])
+            prop.setdefault("target_content_id", target_id)
+            prop.setdefault("approval_state", "draft")
+            prop.setdefault("consumed", False)
+            prop.setdefault("source_refs", [])
+            prop.setdefault("base_sha", ctx_view.get("base_sha", ""))
+            prop.setdefault("repository", "kimeisele/hermes-sankhya-25")
             prop["content_hash"] = hashlib.sha256(
                 json.dumps(prop, sort_keys=True).encode()).hexdigest()
             return RoleResult(self.ROLE, "COMPLETE", data={"proposal": prop},
                               token_estimate=result.total_tokens,
                               cost_estimate=result.estimated_cost)
 
-        return RoleResult(self.ROLE, "COMPLETE",
-                          data={"proposal_count": len(proposals)})
+        # Deterministic fallback: create minimal proposal
+        prop = {
+            "proposal_id": _uuid.uuid4().hex[:12],
+            "target_content_id": target_id,
+            "payload": {},
+            "content_hash": hashlib.sha256(b"{}").hexdigest(),
+            "approval_state": "draft",
+            "consumed": False,
+            "source_refs": [],
+            "base_sha": ctx_view.get("base_sha", ""),
+            "repository": "kimeisele/hermes-sankhya-25",
+        }
+        return RoleResult(self.ROLE, "COMPLETE", data={"proposal": prop})
 
 
 # ---------------------------------------------------------------------------

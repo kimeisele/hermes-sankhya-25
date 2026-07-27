@@ -62,12 +62,12 @@ def build_role_registry(client: DeepSeekClient | None = None,
                                        decision_schema, is_write_critical=True)
         engagement_adapter = RoleModelAdapter(client, client.pro_model,
                                               pro_system or "You draft engagement proposals.",
-                                              role_schema, is_write_critical=True)
+                                              proposal_schema, is_write_critical=True)
         planner_adapter = RoleModelAdapter(client, client.pro_model,
                                            pro_system or "You create engineering proposals.",
                                            proposal_schema, is_write_critical=True)
 
-        registry["scout"] = ScoutRole(adapter=flash_adapter)
+        registry["scout"] = ScoutRole(adapter=flash_adapter, moltbook=moltbook_reader)
         registry["records_clerk"] = RecordsClerkRole(adapter=flash_adapter)
         registry["evidence_analyst"] = EvidenceAnalystRole(adapter=flash_adapter)
         registry["agency_director"] = AgencyDirectorRole(adapter=pro_adapter)
@@ -75,7 +75,7 @@ def build_role_registry(client: DeepSeekClient | None = None,
         registry["auditor"] = AuditorRole(adapter=flash_adapter, pro_adapter=pro_adapter)
         registry["engineering_planner"] = EngineeringPlannerRole(adapter=planner_adapter)
     else:
-        registry["scout"] = ScoutRole()
+        registry["scout"] = ScoutRole(moltbook=moltbook_reader)
         registry["records_clerk"] = RecordsClerkRole()
         registry["evidence_analyst"] = EvidenceAnalystRole()
         registry["agency_director"] = AgencyDirectorRole()

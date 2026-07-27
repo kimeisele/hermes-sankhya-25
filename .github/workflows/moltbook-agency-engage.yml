@@ -44,13 +44,12 @@ jobs:
           TARGET_ID: "${{ inputs.target_content_id }}"
           HASH: "${{ inputs.proposal_hash }}"
         run: |
-          set -e
           fail() { echo "approved=false" >> "$GITHUB_OUTPUT"; echo "$1"; exit 0; }
           [ "$CONFIRM" = "YES" ] || fail "Confirm must be YES"
           echo "$RUN_ID" | grep -qE '^[0-9]+$' || fail "run_id must be numeric"
           [ -n "$PROP_ID" ] || fail "proposal_id required"
-          echo "$TARGET_ID" | grep -qE '^[a-f0-9-]+$' || fail "target_content_id must be UUID-like"
-          echo "$HASH" | grep -qE '^[a-f0-9]{64}$' || fail "proposal_hash must be 64 hex chars"
+          echo "$TARGET_ID" | grep -qE '^[a-f0-9-]+$' || fail "target must be UUID-like"
+          echo "$HASH" | grep -qE '^[a-f0-9]{64}$' || fail "hash must be 64 hex"
           echo "approved=true" >> "$GITHUB_OUTPUT"
 
   engage:
@@ -59,6 +58,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: moltbook-write
+    env:
+      RUN_ID: "${{ inputs.run_id }}"
+      PROP_ID: "${{ inputs.proposal_id }}"
+      TARGET_ID: "${{ inputs.target_content_id }}"
+      HASH: "${{ inputs.proposal_hash }}"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,39 +72,35 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Download observe artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: hq-report-observe-${{ inputs.run_id }}
           path: /tmp/artifact
-        continue-on-error: true
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          repository: "${{ github.repository }}"
+          run-id: "${{ inputs.run_id }}"
 
       - name: Validate artifact and proposal binding
-        env:
-          RUN_ID: "${{ inputs.run_id }}"
-          PROP_ID: "${{ inputs.proposal_id }}"
-          TARGET_ID: "${{ inputs.target_content_id }}"
-          HASH: "${{ inputs.proposal_hash }}"
         run: |
-          if [ ! -f /tmp/artifact/ctx_artifact.json ]; then
-            echo "Error: artifact not found for run $RUN_ID"
-            exit 1
-          fi
+          pip install jsonschema --quiet
+          SHA=$(git rev-parse HEAD)
           python -c "
-          import json
-          ctx = json.load(open('/tmp/artifact/ctx_artifact.json'))
-          assert ctx['run_id'].startswith('$RUN_ID') or True  # run_id match
-          proposals = ctx.get('engagement_proposals', [])
-          found = any(p.get('content_hash') == '$HASH' for p in proposals)
-          if not found:
-              raise SystemExit('Proposal hash not found in artifact')
-          print('Proposal verified:', found)
+          from agency.artifact import validate_artifact
+          ctx = validate_artifact('/tmp/artifact/ctx_artifact.json',
+              expected_run_id='$RUN_ID',
+              expected_base_sha='$SHA',
+              proposal_id='$PROP_ID',
+              proposal_hash='$HASH',
+              target_content_id='$TARGET_ID',
+              must_be_approved=True,
+              must_not_be_consumed=True)
+          print('Artifact validated: run_id=' + ctx['run_id'][:12])
           "
 
       - name: Execute approved write
         env:
           MOLTBOOK_TOKEN: "${{ secrets.MOLTBOOK_TOKEN }}"
         run: |
-          echo "V1: write validation complete."
+          echo "Engagement validated and ready."
           echo "Bridge invocation deferred to live enablement."
-          echo "No live write executed in dry-run mode."
+          echo "No live write executed."

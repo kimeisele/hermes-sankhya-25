@@ -12,11 +12,14 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: read
 
 jobs:
   materialize:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      RUN_ID: "${{ inputs.artifact_run_id }}"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,33 +31,29 @@ jobs:
           python-version: "3.11"
 
       - name: Validate run ID
-        env:
-          RUN_ID: "${{ inputs.artifact_run_id }}"
         run: |
           echo "$RUN_ID" | grep -qE '^[0-9]+$' || {
-            echo "Error: artifact_run_id must be numeric"
-            exit 1
-          }
+            echo "Error: artifact_run_id must be numeric"; exit 1; }
 
       - uses: actions/download-artifact@v4
         with:
           name: hq-report-observe-${{ inputs.artifact_run_id }}
           path: /tmp/artifact
-        continue-on-error: true
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          repository: "${{ github.repository }}"
+          run-id: "${{ inputs.artifact_run_id }}"
 
       - name: Validate and materialize
-        env:
-          RUN_ID: "${{ inputs.artifact_run_id }}"
         run: |
-          if [ ! -f /tmp/artifact/ctx_artifact.json ]; then
-            echo "Error: artifact not found for run $RUN_ID"
-            exit 1
-          fi
+          pip install jsonschema --quiet
+          SHA=$(git rev-parse HEAD)
           python -c "
-          import json
-          ctx = json.load(open('/tmp/artifact/ctx_artifact.json'))
-          print('CTX run_id:', ctx.get('run_id'))
-          print('CTX status:', ctx.get('status'))
+          from agency.artifact import validate_artifact
+          ctx = validate_artifact('/tmp/artifact/ctx_artifact.json',
+              expected_run_id='$RUN_ID',
+              expected_base_sha='$SHA')
+          print('CTX validated: run_id=' + ctx['run_id'][:12])
+          print('Status:', ctx.get('status'))
           "
 
           SAFE_BRANCH="materialize/agency-run-${RUN_ID}"
@@ -70,16 +69,17 @@ jobs:
           git push origin "$SAFE_BRANCH"
 
       - uses: actions/github-script@v7
+        env:
+          RUN_ID: "${{ inputs.artifact_run_id }}"
         with:
           script: |
             const runId = process.env.RUN_ID;
             const { data: pr } = await github.rest.pulls.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: context.repo.owner, repo: context.repo.repo,
               title: `Materialize agency run ${runId}`,
               head: `materialize/agency-run-${runId}`,
               base: 'main',
-              body: `Materialized from observe run ${runId}.\n\nReview and merge to persist.`,
+              body: `Materialized from observe run ${runId}.`,
               draft: true
             });
             console.log(`PR: ${pr.html_url}`);

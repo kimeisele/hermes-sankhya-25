@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvidenceAnalysisOutput",
+  "type": "object",
+  "required": ["accepted", "rejected"],
+  "properties": {
+    "accepted": {"type": "array", "items": {"type": "object"}},
+    "rejected": {"type": "array", "items": {"type": "object"}},
+    "claims": {"type": "array", "items": {"type": "object"}},
+    "scores": {"type": "object"},
+    "rationale": {"type": "string"}
+  }
+}

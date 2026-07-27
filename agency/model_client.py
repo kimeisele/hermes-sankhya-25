@@ -53,10 +53,10 @@ class ModelCallResult:
 # Cost estimation
 # ---------------------------------------------------------------------------
 
-FLASH_INPUT_COST = 0.07
-FLASH_OUTPUT_COST = 0.14
-PRO_INPUT_COST = 0.27
-PRO_OUTPUT_COST = 1.10
+FLASH_INPUT_COST = 0.14
+FLASH_OUTPUT_COST = 0.28
+PRO_INPUT_COST = 0.435
+PRO_OUTPUT_COST = 0.87
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:

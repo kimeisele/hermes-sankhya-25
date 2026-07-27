@@ -317,8 +317,12 @@ class TestOperationalRoles:
 
     def test_engagement_lead_hash(self):
         lead = EngagementLeadRole()
-        result = lead({"engagement_proposals": [{"target": "test"}]})
+        result = lead({"accepted_evidence": [{"source_id": "src-1"}],
+                       "decisions": [{"disposition": "PROPOSE_ENGAGEMENT"}],
+                       "campaign": {"active_inquiry": "test-id"},
+                       "base_sha": "a" * 40})
         assert result.status == "COMPLETE"
+        assert "proposal" in result.data
 
     def test_dry_run_no_model_calls(self):
         sha = _make_sha()
@@ -327,6 +331,201 @@ class TestOperationalRoles:
                                   role_registry=reg)
         ctx = orch.run()
         assert ctx.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: artifact validation
+# ---------------------------------------------------------------------------
+
+class TestArtifactValidation:
+    def test_repository_mismatch_rejected(self):
+        from agency.artifact import validate_artifact
+        import json
+        import tempfile
+        import os
+        ctx = {"repository": "wrong/repo", "run_id": "test-123"}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(ctx, f)
+            path = f.name
+        try:
+            with pytest.raises(ValueError, match="Repository mismatch"):
+                validate_artifact(path, expected_run_id="test-123")
+        finally:
+            os.unlink(path)
+
+    def test_base_sha_mismatch_rejected(self):
+        from agency.artifact import validate_artifact
+        import json
+        import tempfile
+        import os
+        ctx = {"repository": "kimeisele/hermes-sankhya-25", "base_sha": "a" * 40,
+               "run_id": "r1"}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(ctx, f)
+            path = f.name
+        try:
+            with pytest.raises(ValueError, match="Base SHA mismatch"):
+                validate_artifact(path, expected_base_sha="b" * 40)
+        finally:
+            os.unlink(path)
+
+    def test_proposal_hash_mismatch_rejected(self):
+        from agency.artifact import validate_artifact
+        import json
+        import tempfile
+        import os
+        ctx = {"repository": "kimeisele/hermes-sankhya-25",
+               "run_id": "r1", "base_sha": "",
+               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
+                                         "approval_state": "approved", "consumed": False,
+                                         "target_content_id": "t1"}]}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(ctx, f)
+            path = f.name
+        try:
+            with pytest.raises(ValueError, match="Proposal hash mismatch"):
+                validate_artifact(path, proposal_id="p1", proposal_hash="b" * 64,
+                                  target_content_id="t1")
+        finally:
+            os.unlink(path)
+
+    def test_consumed_proposal_rejected(self):
+        from agency.artifact import validate_artifact
+        import json
+        import tempfile
+        import os
+        ctx = {"repository": "kimeisele/hermes-sankhya-25",
+               "run_id": "r1", "base_sha": "",
+               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
+                                         "approval_state": "approved", "consumed": True,
+                                         "target_content_id": "t1"}]}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(ctx, f)
+            path = f.name
+        try:
+            with pytest.raises(ValueError, match="already consumed"):
+                validate_artifact(path, proposal_id="p1", proposal_hash="a" * 64,
+                                  target_content_id="t1")
+        finally:
+            os.unlink(path)
+
+    def test_not_approved_rejected(self):
+        from agency.artifact import validate_artifact
+        import json
+        import tempfile
+        import os
+        ctx = {"repository": "kimeisele/hermes-sankhya-25",
+               "run_id": "r1", "base_sha": "",
+               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
+                                         "approval_state": "draft", "consumed": False,
+                                         "target_content_id": "t1"}]}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(ctx, f)
+            path = f.name
+        try:
+            with pytest.raises(ValueError, match="not approved"):
+                validate_artifact(path, proposal_id="p1", proposal_hash="a" * 64,
+                                  target_content_id="t1")
+        finally:
+            os.unlink(path)
+
+    def test_valid_artifact_passes(self):
+        from agency.artifact import validate_artifact
+        import json
+        import tempfile
+        import os
+        ctx = {"repository": "kimeisele/hermes-sankhya-25",
+               "run_id": "r1", "base_sha": "",
+               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
+                                         "approval_state": "approved", "consumed": False,
+                                         "target_content_id": "t1"}]}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(ctx, f)
+            path = f.name
+        try:
+            result = validate_artifact(path, proposal_id="p1", proposal_hash="a" * 64,
+                                       target_content_id="t1")
+            assert result["repository"] == "kimeisele/hermes-sankhya-25"
+        finally:
+            os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: fake Moltbook reader
+# ---------------------------------------------------------------------------
+
+class TestFakeReader:
+    def test_scout_uses_fake_reader(self):
+        class FakeReader:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "author": {"name": "test"},
+                                 "url": f"https://x.com/p/{pid}"}}
+            def fetch_comments(self, pid):
+                return {"comments": []}
+
+        scout = ScoutRole(moltbook=FakeReader())
+        result = scout({"inbox": [], "accepted_evidence_ids": [],
+                        "campaign": {"active_inquiry": "post-123"}})
+        assert result.status == "COMPLETE"
+        assert result.data["candidates_found"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: observe report/CTX same run
+# ---------------------------------------------------------------------------
+
+class TestSameRunArtifact:
+    def test_report_and_ctx_same_run_id(self):
+        sha = _make_sha()
+        reg = build_role_registry()
+
+        class P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(), role_registry=reg)
+        ctx = orch.run()
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert ctx.run_id[:12] in report  # HQ truncates to 12 chars
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: PROPOSE_ENGAGEMENT creates proposal
+# ---------------------------------------------------------------------------
+
+class TestProposeEngagement:
+    def test_engagement_creates_first_proposal(self):
+        sha = _make_sha()
+
+        class DirectorWithEngagement(AgencyDirectorRole):
+            def __call__(self, ctx_view):
+                return RoleResult("agency_director", "COMPLETE",
+                                  data={"disposition": "PROPOSE_ENGAGEMENT"})
+
+        reg = build_role_registry()
+        reg["agency_director"] = DirectorWithEngagement()
+
+        class P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(), role_registry=reg)
+        # Add evidence so EngagementLead doesn't return NOOP
+        orch.ctx.add_accepted_evidence([{"source_id": "src-1", "url": "x", "untrusted": True}])
+        orch.ctx.campaign["active_inquiry"] = "test-inquiry"
+        ctx = orch.run()
+        proposals = ctx.engagement_proposals
+        assert len(proposals) > 0, "PROPOSE_ENGAGEMENT should create at least one proposal"
+        prop = proposals[0]
+        assert "proposal_id" in prop
+        assert "content_hash" in prop
+        assert prop["consumed"] is False
+        prop = proposals[0]
+        assert "proposal_id" in prop
+        assert "content_hash" in prop
+        assert "approval_state" in prop
+        assert prop["consumed"] is False
 
 
 # ---------------------------------------------------------------------------

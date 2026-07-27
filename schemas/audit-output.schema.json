@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuditOutput",
+  "type": "object",
+  "required": ["findings", "passed"],
+  "properties": {
+    "findings": {"type": "array", "items": {"type": "string"}},
+    "passed": {"type": "boolean"}
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EngagementProposal",
+  "type": "object",
+  "required": ["proposal_id", "target_content_id", "payload", "content_hash", "approval_state", "consumed", "base_sha", "repository"],
+  "properties": {
+    "proposal_id": {"type": "string"},
+    "target_content_id": {"type": "string"},
+    "payload": {"type": "object"},
+    "content_hash": {"type": "string", "minLength": 64, "maxLength": 64},
+    "approval_state": {"type": "string", "enum": ["draft", "proposed", "approved", "rejected"]},
+    "consumed": {"type": "boolean"},
+    "source_refs": {"type": "array", "items": {"type": "string"}},
+    "base_sha": {"type": "string", "minLength": 40, "maxLength": 40},
+    "repository": {"type": "string"}
+  }
+}
