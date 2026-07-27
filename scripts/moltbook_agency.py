@@ -30,30 +30,16 @@ def _resolve_base_sha() -> str:
 
 
 def _load_config() -> dict:
-    """Load config using tomllib (Python 3.11+) with fallback."""
+    """Load config using tomllib. Fails on missing or invalid file."""
+    import tomllib
     config_path = _repo_root / "config" / "moltbook_agency.toml"
-    if config_path.exists():
-        try:
-            import tomllib
-            with open(config_path, "rb") as f:
-                return tomllib.load(f)
-        except Exception:
-            pass
-    # Fallback: return safe defaults
-    return {
-        "dry_run": True,
-        "automation_enabled": False,
-        "moltbook_read_only": True,
-        "max_active_inquiries": 1,
-        "max_writes_per_run": 1,
-        "allow_original_posts": False,
-        "active_inquiry": "fd2c8049-5a16-417b-ab5d-8400a80d3ca7",
-        "budget": {"max_role_calls": 20, "max_delegation_rounds": 5,
-                   "max_tokens": 100000, "max_cost_estimate": 5.0,
-                   "max_duration_seconds": 600},
-        "models": {"flash": "deepseek-v4-flash", "pro": "deepseek-v4-pro"},
-        "timeout": 60, "max_output_tokens": 4096,
-    }
+    with open(config_path, "rb") as f:
+        cfg = tomllib.load(f)
+    required = ["automation_enabled", "moltbook_read_only", "models", "budget"]
+    for field in required:
+        if field not in cfg:
+            raise ValueError(f"Missing required config field: {field}")
+    return cfg
 
 
 def main() -> int:
@@ -63,6 +49,7 @@ def main() -> int:
     parser.add_argument("--trigger", choices=["manual", "scheduled", "dispatch"], default="manual")
     parser.add_argument("--output", type=str, default="", help="HQ report output path")
     parser.add_argument("--ctx-output", type=str, default="", help="CTX artifact output path")
+    parser.add_argument("--workflow-run-id", type=str, default=None, help="GitHub Actions run ID")
     args = parser.parse_args()
 
     cfg = _load_config()
@@ -105,6 +92,7 @@ def main() -> int:
 
     orch = AgencyOrchestrator(
         trigger=args.trigger, shift=args.shift, base_sha=base_sha,
+        workflow_run_id=args.workflow_run_id,
         policy_config={"dry_run": is_dry,
                        "automation_enabled": cfg.get("automation_enabled", False),
                        "moltbook_read_only": True,

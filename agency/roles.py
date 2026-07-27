@@ -148,8 +148,9 @@ class ScoutRole:
                                 "content_type": "comment", "untrusted": True,
                             })
                     inbox = items
-                except Exception:
-                    pass  # read failure → empty inbox, deterministic NOOP
+                except Exception as exc:
+                    return RoleResult(self.ROLE, "FAIL_CLOSED",
+                                      fail_reason=f"Moltbook read failed: {exc}")
 
         new = [i for i in inbox if i.get("id") not in existing]
         if not new:

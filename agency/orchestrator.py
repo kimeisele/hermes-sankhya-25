@@ -50,29 +50,42 @@ def build_role_registry(client: DeepSeekClient | None = None,
         from pathlib import Path
         import json
         sd = Path(__file__).resolve().parents[1] / "schemas"
-        role_schema = json.loads((sd / "agency-role-result-v1.schema.json").read_text())
+        # Domain-specific output schemas per role
+        scout_schema = json.loads((sd / "scout-output.schema.json").read_text())
+        evidence_schema = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
         decision_schema = json.loads((sd / "agency-decision-v1.schema.json").read_text())
+        engagement_schema = json.loads((sd / "engagement-proposal.schema.json").read_text())
+        audit_schema = json.loads((sd / "audit-output.schema.json").read_text())
         proposal_schema = json.loads((sd / "engineering-proposal-v1.schema.json").read_text())
 
-        flash_adapter = RoleModelAdapter(client, client.flash_model,
-                                         flash_system or "You are a read-only intelligence analyst.",
-                                         role_schema, is_write_critical=False)
+        scout_adapter = RoleModelAdapter(client, client.flash_model,
+                                         flash_system or "You discover and deduplicate source candidates.",
+                                         scout_schema, is_write_critical=False)
+        clerk_adapter = RoleModelAdapter(client, client.flash_model,
+                                         flash_system or "You normalize metadata and preserve provenance.",
+                                         scout_schema, is_write_critical=False)
+        evidence_adapter = RoleModelAdapter(client, client.flash_model,
+                                            flash_system or "You extract claims and classify evidence.",
+                                            evidence_schema, is_write_critical=False)
         pro_adapter = RoleModelAdapter(client, client.pro_model,
-                                       pro_system or "You are a strategic agency director.",
+                                       pro_system or "You make strategic agency routing decisions.",
                                        decision_schema, is_write_critical=True)
         engagement_adapter = RoleModelAdapter(client, client.pro_model,
                                               pro_system or "You draft engagement proposals.",
-                                              proposal_schema, is_write_critical=True)
+                                              engagement_schema, is_write_critical=True)
+        auditor_adapter = RoleModelAdapter(client, client.flash_model,
+                                           flash_system or "You audit policy, receipts, and budgets.",
+                                           audit_schema, is_write_critical=False)
         planner_adapter = RoleModelAdapter(client, client.pro_model,
                                            pro_system or "You create engineering proposals.",
                                            proposal_schema, is_write_critical=True)
 
-        registry["scout"] = ScoutRole(adapter=flash_adapter, moltbook=moltbook_reader)
-        registry["records_clerk"] = RecordsClerkRole(adapter=flash_adapter)
-        registry["evidence_analyst"] = EvidenceAnalystRole(adapter=flash_adapter)
+        registry["scout"] = ScoutRole(adapter=scout_adapter, moltbook=moltbook_reader)
+        registry["records_clerk"] = RecordsClerkRole(adapter=clerk_adapter)
+        registry["evidence_analyst"] = EvidenceAnalystRole(adapter=evidence_adapter)
         registry["agency_director"] = AgencyDirectorRole(adapter=pro_adapter)
         registry["engagement_lead"] = EngagementLeadRole(adapter=engagement_adapter)
-        registry["auditor"] = AuditorRole(adapter=flash_adapter, pro_adapter=pro_adapter)
+        registry["auditor"] = AuditorRole(adapter=auditor_adapter, pro_adapter=pro_adapter)
         registry["engineering_planner"] = EngineeringPlannerRole(adapter=planner_adapter)
     else:
         registry["scout"] = ScoutRole(moltbook=moltbook_reader)
@@ -100,7 +113,8 @@ class AgencyOrchestrator:
                  budget: AgencyBudget | None = None,
                  repo_provider: RepoStateProvider | None = None,
                  role_registry: dict[str, Any] | None = None,
-                 moltbook_reader: Any = None) -> None:
+                 moltbook_reader: Any = None,
+                 workflow_run_id: str | None = None) -> None:
         self.policy = AgencyPolicy(policy_config)
         self.budget = budget or AgencyBudget()
         self._repo_provider = repo_provider or RepoStateProvider()
@@ -116,7 +130,7 @@ class AgencyOrchestrator:
         self.ctx = AgencyContextV1(
             trigger=trigger, shift=shift, repository=repository, base_sha=sha,
             campaign=campaign, policy=self.policy.to_dict(), budget=self.budget,
-            repo_provider=self._repo_provider)
+            repo_provider=self._repo_provider, workflow_run_id=workflow_run_id)
         self._start_wall = _time.monotonic()
 
     # ------------------------------------------------------------------

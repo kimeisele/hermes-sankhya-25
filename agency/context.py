@@ -155,7 +155,7 @@ class AgencyContextV1:
     """Centralized, typed context for a single agency run."""
 
     __slots__ = (
-        "schema_version", "run_id", "trigger", "shift", "started_at",
+        "schema_version", "run_id", "workflow_run_id", "trigger", "shift", "started_at",
         "repository", "base_sha",
         "campaign", "policy", "budget",
         "_inbox", "_source_candidates", "_accepted_evidence",
@@ -173,9 +173,11 @@ class AgencyContextV1:
                  campaign: dict[str, Any] | None = None,
                  policy: dict[str, Any] | None = None,
                  budget: AgencyBudget | None = None,
-                 repo_provider: RepoStateProvider | None = None) -> None:
+                 repo_provider: RepoStateProvider | None = None,
+                 workflow_run_id: str | None = None) -> None:
         self.schema_version = "1.0"
         self.run_id = str(_uuid.uuid4())
+        self.workflow_run_id = workflow_run_id  # GitHub Actions run ID (numeric) or None
         self.trigger = trigger
         self.shift = shift
         self.started_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
@@ -375,6 +377,7 @@ class AgencyContextV1:
         d: dict[str, Any] = {
             "schema_version": self.schema_version,
             "run_id": self.run_id,
+            "workflow_run_id": self.workflow_run_id,
             "trigger": self.trigger,
             "shift": self.shift,
             "started_at": self.started_at,

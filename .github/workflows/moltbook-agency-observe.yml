@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 15
     env:
       SHIFT: "${{ inputs.shift || 'morning' }}"
+      GH_RUN_ID: "${{ github.run_id }}"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,31 +41,27 @@ jobs:
       - name: Resolve base SHA
         id: sha
         run: |
-          SHA=$(git rev-parse HEAD)
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Load configuration
         id: config
         run: |
           python3 -c "
-          import tomllib, json, sys
+          import tomllib, sys
           with open('config/moltbook_agency.toml', 'rb') as f:
               cfg = tomllib.load(f)
-          enabled = cfg.get('automation_enabled', False)
-          print(f'automation_enabled={enabled}')
-          with open('/tmp/cfg.json', 'w') as out:
-              json.dump(cfg, out)
-          " > /tmp/cfg_out.txt
-          cat /tmp/cfg_out.txt >> "$GITHUB_OUTPUT"
+          print(cfg.get('automation_enabled', False))
+          " > /tmp/auto_enabled.txt
+          echo "enabled=$(cat /tmp/auto_enabled.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Validate (disabled)
-        if: steps.config.outputs.automation_enabled != 'True'
+        if: steps.config.outputs.enabled != 'True'
         run: |
           echo "Agency observe is disabled (automation_enabled=false)."
-          echo "Run completed successfully — no Moltbook reads or writes."
+          echo "Run completed successfully."
 
       - name: Run observe (enabled)
-        if: steps.config.outputs.automation_enabled == 'True'
+        if: steps.config.outputs.enabled == 'True'
         env:
           DEEPSEEK_API_KEY: "${{ secrets.DEEPSEEK_API_KEY }}"
           MOLTBOOK_TOKEN: "${{ secrets.MOLTBOOK_TOKEN }}"
@@ -73,12 +70,13 @@ jobs:
           python scripts/moltbook_agency.py \
             --mode observe \
             --shift "$SHIFT" \
+            --workflow-run-id "$GH_RUN_ID" \
             --trigger "${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}" \
             --output /tmp/hq_report.md \
             --ctx-output /tmp/ctx_artifact.json
 
       - uses: actions/upload-artifact@v4
-        if: steps.config.outputs.automation_enabled == 'True'
+        if: steps.config.outputs.enabled == 'True'
         with:
           name: hq-report-observe-${{ github.run_id }}
           path: |

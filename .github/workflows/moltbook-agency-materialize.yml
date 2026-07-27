@@ -32,10 +32,15 @@ jobs:
 
       - name: Validate run ID
         run: |
-          echo "$RUN_ID" | grep -qE '^[0-9]+$' || {
-            echo "Error: artifact_run_id must be numeric"; exit 1; }
+          python -c "
+          import re, os
+          rid = os.environ['RUN_ID']
+          assert re.fullmatch(r'[0-9]+', rid), f'Invalid run_id: {rid}'
+          print(f'Run ID valid: {rid}')
+          "
 
-      - uses: actions/download-artifact@v4
+      - name: Download observe artifact
+        uses: actions/download-artifact@v4
         with:
           name: hq-report-observe-${{ inputs.artifact_run_id }}
           path: /tmp/artifact
@@ -47,18 +52,12 @@ jobs:
         run: |
           pip install jsonschema --quiet
           SHA=$(git rev-parse HEAD)
-          python -c "
-          from agency.artifact import validate_artifact
-          ctx = validate_artifact('/tmp/artifact/ctx_artifact.json',
-              expected_run_id='$RUN_ID',
-              expected_base_sha='$SHA')
-          print('CTX validated: run_id=' + ctx['run_id'][:12])
-          print('Status:', ctx.get('status'))
-          "
+          python -m agency.artifact validate-materialization \
+            /tmp/artifact/ctx_artifact.json "$RUN_ID" "$SHA"
 
           SAFE_BRANCH="materialize/agency-run-${RUN_ID}"
           git checkout -b "$SAFE_BRANCH"
-          mkdir -p "data/agency/runs"
+          mkdir -p data/agency/runs
           cp /tmp/artifact/ctx_artifact.json "data/agency/runs/run-${RUN_ID}.json"
           cp /tmp/artifact/hq_report.md "data/agency/runs/run-${RUN_ID}.md"
 
@@ -68,7 +67,8 @@ jobs:
           git commit -m "materialize: agency run ${RUN_ID}"
           git push origin "$SAFE_BRANCH"
 
-      - uses: actions/github-script@v7
+      - name: Open draft PR
+        uses: actions/github-script@v7
         env:
           RUN_ID: "${{ inputs.artifact_run_id }}"
         with:

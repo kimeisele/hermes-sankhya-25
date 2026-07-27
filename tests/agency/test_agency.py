@@ -338,116 +338,73 @@ class TestOperationalRoles:
 # ---------------------------------------------------------------------------
 
 class TestArtifactValidation:
-    def test_repository_mismatch_rejected(self):
-        from agency.artifact import validate_artifact
+    def _make_prop(self, **overrides):
+        from agency.artifact import canonical_hash
+        prop = {"proposal_id": "p1", "target_content_id": "t1",
+                "payload": {}, "base_sha": "", "repository": "kimeisele/hermes-sankhya-25",
+                "approval_state": "approved", "consumed": False}
+        prop.update(overrides)
+        prop["content_hash"] = canonical_hash(prop)
+        return prop
+
+    def _make_ctx(self, proposals=None):
+        return {"repository": "kimeisele/hermes-sankhya-25",
+                "run_id": "r1", "base_sha": "",
+                "engagement_proposals": proposals or []}
+
+    def _write_and_validate(self, ctx, **kw):
         import json
         import tempfile
         import os
-        ctx = {"repository": "wrong/repo", "run_id": "test-123"}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(ctx, f)
             path = f.name
         try:
-            with pytest.raises(ValueError, match="Repository mismatch"):
-                validate_artifact(path, expected_run_id="test-123")
+            from agency.artifact import validate_artifact
+            return validate_artifact(path, **kw)
         finally:
             os.unlink(path)
+
+    def test_repository_mismatch_rejected(self):
+        ctx = {"repository": "wrong/repo", "run_id": "test-123"}
+        with pytest.raises(ValueError, match="Repository mismatch"):
+            self._write_and_validate(ctx)
 
     def test_base_sha_mismatch_rejected(self):
-        from agency.artifact import validate_artifact
-        import json
-        import tempfile
-        import os
-        ctx = {"repository": "kimeisele/hermes-sankhya-25", "base_sha": "a" * 40,
-               "run_id": "r1"}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(ctx, f)
-            path = f.name
-        try:
-            with pytest.raises(ValueError, match="Base SHA mismatch"):
-                validate_artifact(path, expected_base_sha="b" * 40)
-        finally:
-            os.unlink(path)
+        ctx = self._make_ctx()
+        with pytest.raises(ValueError, match="Base SHA mismatch"):
+            self._write_and_validate(ctx, expected_base_sha="b" * 40)
 
     def test_proposal_hash_mismatch_rejected(self):
-        from agency.artifact import validate_artifact
-        import json
-        import tempfile
-        import os
-        ctx = {"repository": "kimeisele/hermes-sankhya-25",
-               "run_id": "r1", "base_sha": "",
-               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
-                                         "approval_state": "approved", "consumed": False,
-                                         "target_content_id": "t1"}]}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(ctx, f)
-            path = f.name
-        try:
-            with pytest.raises(ValueError, match="Proposal hash mismatch"):
-                validate_artifact(path, proposal_id="p1", proposal_hash="b" * 64,
-                                  target_content_id="t1")
-        finally:
-            os.unlink(path)
+        prop = self._make_prop()
+        ctx = self._make_ctx([prop])
+        with pytest.raises(ValueError, match="Canonical hash mismatch"):
+            self._write_and_validate(ctx, proposal_id="p1", proposal_hash="b" * 64,
+                                     target_content_id="t1")
 
     def test_consumed_proposal_rejected(self):
-        from agency.artifact import validate_artifact
-        import json
-        import tempfile
-        import os
-        ctx = {"repository": "kimeisele/hermes-sankhya-25",
-               "run_id": "r1", "base_sha": "",
-               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
-                                         "approval_state": "approved", "consumed": True,
-                                         "target_content_id": "t1"}]}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(ctx, f)
-            path = f.name
-        try:
-            with pytest.raises(ValueError, match="already consumed"):
-                validate_artifact(path, proposal_id="p1", proposal_hash="a" * 64,
-                                  target_content_id="t1")
-        finally:
-            os.unlink(path)
+        prop = self._make_prop(consumed=True)
+        ctx = self._make_ctx([prop])
+        with pytest.raises(ValueError, match="already consumed"):
+            self._write_and_validate(ctx, proposal_id="p1",
+                                     proposal_hash=prop["content_hash"],
+                                     target_content_id="t1")
 
     def test_not_approved_rejected(self):
-        from agency.artifact import validate_artifact
-        import json
-        import tempfile
-        import os
-        ctx = {"repository": "kimeisele/hermes-sankhya-25",
-               "run_id": "r1", "base_sha": "",
-               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
-                                         "approval_state": "draft", "consumed": False,
-                                         "target_content_id": "t1"}]}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(ctx, f)
-            path = f.name
-        try:
-            with pytest.raises(ValueError, match="not approved"):
-                validate_artifact(path, proposal_id="p1", proposal_hash="a" * 64,
-                                  target_content_id="t1")
-        finally:
-            os.unlink(path)
+        prop = self._make_prop(approval_state="draft")
+        ctx = self._make_ctx([prop])
+        with pytest.raises(ValueError, match="not approved"):
+            self._write_and_validate(ctx, proposal_id="p1",
+                                     proposal_hash=prop["content_hash"],
+                                     target_content_id="t1")
 
     def test_valid_artifact_passes(self):
-        from agency.artifact import validate_artifact
-        import json
-        import tempfile
-        import os
-        ctx = {"repository": "kimeisele/hermes-sankhya-25",
-               "run_id": "r1", "base_sha": "",
-               "engagement_proposals": [{"proposal_id": "p1", "content_hash": "a" * 64,
-                                         "approval_state": "approved", "consumed": False,
-                                         "target_content_id": "t1"}]}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(ctx, f)
-            path = f.name
-        try:
-            result = validate_artifact(path, proposal_id="p1", proposal_hash="a" * 64,
-                                       target_content_id="t1")
-            assert result["repository"] == "kimeisele/hermes-sankhya-25"
-        finally:
-            os.unlink(path)
+        prop = self._make_prop()
+        ctx = self._make_ctx([prop])
+        result = self._write_and_validate(ctx, proposal_id="p1",
+                                          proposal_hash=prop["content_hash"],
+                                          target_content_id="t1")
+        assert result["repository"] == "kimeisele/hermes-sankhya-25"
 
 
 # ---------------------------------------------------------------------------
