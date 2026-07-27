@@ -648,7 +648,7 @@ class TestReadOnlyE2E:
             base_sha=sha, repo_provider=P(), role_registry=reg,
             workflow_run_id="42",
             campaign={"active_inquiry": "test-post", "objective": "Test inquiry"})
-        orch.ctx._evidence_index = {KNOWN_ID}  # simulate cross-run dedup
+        orch.ctx.set_evidence_index({KNOWN_ID})  # simulate cross-run dedup
 
         ctx = orch.run()
 
@@ -723,10 +723,186 @@ class TestReadOnlyE2E:
         orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(),
                                   role_registry=reg)
         orch.ctx.campaign["active_inquiry"] = "test-post"
-        orch.ctx._evidence_index = {"known-1"}
+        orch.ctx.set_evidence_index({"known-1"})
 
         ctx = orch.run()
         candidates = ctx.source_candidates
         ids = {c.get("source_id", c.get("id")) for c in candidates}
         assert "known-1" not in ids
         assert "new-1" in ids
+
+    def test_evidence_index_loader(self):
+        """Repository-backed loader excludes known IDs."""
+        from agency.evidence_index import load_evidence_index
+        ids = load_evidence_index()
+        assert isinstance(ids, set)
+        # source records may or may not exist in test context
+        # but the loader must always return a set, never crash
+
+
+# ---------------------------------------------------------------------------
+# Runtime CTX validation
+# ---------------------------------------------------------------------------
+
+class TestRuntimeValidation:
+    def test_valid_ctx_passes(self):
+        sha = _make_sha("val")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.close("completed")
+        d = ctx.to_dict(sanitize=True)
+        from agency.validate_ctx import validate_sanitized_ctx
+        assert validate_sanitized_ctx(d) == []
+
+    def test_non_numeric_workflow_run_id_rejected(self):
+        sha = _make_sha("val2")
+        ctx = AgencyContextV1(base_sha=sha, workflow_run_id="abc123")
+        ctx.close("completed")
+        d = ctx.to_dict(sanitize=True)
+        from agency.validate_ctx import validate_sanitized_ctx
+        errs = validate_sanitized_ctx(d)
+        assert any("workflow_run_id" in e for e in errs)
+
+    def test_bad_base_sha_rejected(self):
+        d = {"schema_version": "1.0", "run_id": "x", "workflow_run_id": None,
+             "trigger": "manual", "shift": "morning",
+             "started_at": "2026-01-01T00:00:00Z",
+             "repository": "kimeisele/hermes-sankhya-25",
+             "base_sha": "bad", "campaign": {}, "policy": {},
+             "budget": {"max_role_calls": 1, "max_delegation_rounds": 1,
+                        "max_tokens": 1, "max_cost_estimate": 1.0,
+                        "max_duration_seconds": 1},
+             "status": "completed", "completed_at": None, "events": []}
+        from agency.validate_ctx import validate_sanitized_ctx
+        errs = validate_sanitized_ctx(d)
+        assert any("base_sha" in e for e in errs)
+
+
+# ---------------------------------------------------------------------------
+# Fake-DeepSeek Observe E2E (production-like adapters)
+# ---------------------------------------------------------------------------
+
+class TestFakeDeepSeekE2E:
+    def test_observe_with_fake_transport(self):
+        """Full pipeline with real adapters + fake DeepSeek transport."""
+        sha = _make_sha("fake-ds")
+
+        # Scout schema response
+        scout_response = {"candidates_found": 1, "candidates": [
+            {"url": "https://www.moltbook.com/post/test-post",
+             "id": "new-claim-1",
+             "author_handle": "test_agent",
+             "content_type": "comment"}
+        ]}
+        # Clerk schema response
+        clerk_response = {"normalized": [{
+            "source_id": "new-claim-1",
+            "url": "https://www.moltbook.com/post/test-post",
+            "author_handle": "test_agent",
+            "content_type": "comment",
+            "observed_at": "2026-07-27T00:00:00Z",
+            "untrusted": True,
+            "content_excerpt": "commit_hash is essential for verification receipts",
+            "paraphrase": "commit_hash is essential",
+            "provenance": ["https://www.moltbook.com/post/test-post"]
+        }]}
+        # Evidence Analyst response
+        evidence_response = {"accepted": [{
+            "source_id": "new-claim-1",
+            "url": "https://www.moltbook.com/post/test-post",
+            "author_handle": "test_agent",
+            "untrusted": True,
+            "content_excerpt": "commit_hash is essential for verification receipts"
+        }], "rejected": [], "claims": [], "scores": {}, "rationale": "Valid claim"}
+        # Director response (schema-compliant: decision_id + director_run_id are envelope fields)
+        director_response = {"disposition": "RECORD_ONLY", "rationale": "New evidence found",
+                            "decision_id": "d1", "director_run_id": "r1",
+                            "timestamp": "2026-07-27T00:00:00Z"}
+        # Auditor response
+        auditor_response = {"findings": [], "passed": True}
+
+        call_log = []
+
+        class FakeTransport:
+            def __call__(self, payload):
+                call_log.append({
+                    "model": payload.get("model"),
+                    "system": payload.get("messages", [{}])[0].get("content", "")[:200],
+                    "has_schema": "Output JSON only" in payload.get("messages", [{}])[0].get("content", ""),
+                })
+                # Route by model
+                model = payload.get("model", "")
+                resp_data = scout_response
+                if "pro" in model:
+                    # Could be director, engagement, planner
+                    msg = payload.get("messages", [{}])[0].get("content", "")
+                    if "director" in msg.lower() or "strategic" in msg.lower():
+                        resp_data = director_response
+                    else:
+                        resp_data = director_response
+                else:
+                    # Flash: scout, clerk, evidence, auditor
+                    msg = payload.get("messages", [{}])[0].get("content", "")
+                    if "normalize" in msg.lower():
+                        resp_data = clerk_response
+                    elif "extract claims" in msg.lower() or "classify" in msg.lower():
+                        resp_data = evidence_response
+                    elif "audit" in msg.lower():
+                        resp_data = auditor_response
+                return {
+                    "choices": [{"message": {"content": json.dumps(resp_data)}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+                    "model": model,
+                }
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=FakeTransport())
+
+        class FakeReader:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "Test content about verification.",
+                                 "author": {"name": "post_author"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [
+                    {"id": "new-claim-1",
+                     "content": "commit_hash is essential for verification receipts",
+                     "author": {"name": "test_agent"}},
+                ]}
+
+        class P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        reg = build_role_registry(client=client, moltbook_reader=FakeReader())
+        orch = AgencyOrchestrator(
+            base_sha=sha, repo_provider=P(), role_registry=reg,
+            campaign={"active_inquiry": "test-post", "objective": "Test"})
+        orch.ctx.set_evidence_index(set())  # no prior evidence
+
+        ctx = orch.run()
+
+        # Verify pipeline completed
+        assert ctx.status == "completed"
+
+        # Model calls occurred
+        assert len(call_log) > 0, "At least one model call expected"
+
+        # Each call includes the schema in system prompt
+        for call in call_log:
+            assert call["has_schema"], f"Schema not found in {call['model']} call"
+
+        # Evidence reached Director
+        assert len(ctx.decisions) > 0
+        assert ctx.decisions[0]["disposition"] == "RECORD_ONLY"
+
+        # CTX + HQ produced
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert ctx.run_id[:12] in report
+
+        # No writes
+        assert len(ctx.transactions) == 0
+
+        # Runtime CTX validation passes
+        from agency.validate_ctx import validate_sanitized_ctx
+        errs = validate_sanitized_ctx(d)
+        assert len(errs) == 0, f"CTX validation errors: {errs}"

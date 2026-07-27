@@ -221,6 +221,10 @@ class AgencyContextV1:
                                              "trigger": trigger,
                                              "base_sha": self.base_sha})
 
+    def set_evidence_index(self, ids: set[str]) -> None:
+        """Set durable cross-run evidence IDs from committed records."""
+        self._evidence_index = set(ids)
+
     # -- safe accessors (return deep copies) -------------------------------
 
     @property

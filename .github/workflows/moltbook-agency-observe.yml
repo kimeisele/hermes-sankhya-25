@@ -50,7 +50,19 @@ jobs:
           import tomllib, sys
           with open('config/moltbook_agency.toml', 'rb') as f:
               cfg = tomllib.load(f)
-          print(cfg.get('automation_enabled', False))
+          enabled = cfg.get('automation_enabled', False)
+          # Full validation even when disabled
+          assert cfg.get('moltbook_read_only') == True, 'Observe must be read-only'
+          assert not cfg.get('allow_original_posts', False), 'Original posts must be disabled'
+          assert cfg.get('max_active_inquiries', 1) == 1, 'Must have exactly one active inquiry'
+          models = cfg.get('models', {})
+          assert models.get('flash') in ('deepseek-v4-flash',), f'Invalid flash: {models.get(\"flash\")}'
+          assert models.get('pro') in ('deepseek-v4-pro',), f'Invalid pro: {models.get(\"pro\")}'
+          budget = cfg.get('budget', {})
+          assert budget.get('max_role_calls', 0) > 0, 'max_role_calls must be positive'
+          assert budget.get('max_tokens', 0) > 0, 'max_tokens must be positive'
+          print(f'Config valid. automation_enabled={enabled}')
+          print(enabled)
           " > /tmp/auto_enabled.txt
           echo "enabled=$(cat /tmp/auto_enabled.txt)" >> "$GITHUB_OUTPUT"
 

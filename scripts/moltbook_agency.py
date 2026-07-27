@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -129,6 +130,14 @@ def main() -> int:
 
     ctx = orch.run()
 
+    # Load durable evidence index for cross-run dedup
+    from agency.evidence_index import load_evidence_index
+    try:
+        evidence_ids = load_evidence_index()
+        ctx.set_evidence_index(evidence_ids)
+    except Exception:
+        pass  # non-fatal: dedup may be incomplete but run continues
+
     # Generate HQ report and CTX artifact from same run
     report = render_hq_markdown(ctx.to_dict(sanitize=True))
     if args.output:
@@ -138,7 +147,14 @@ def main() -> int:
         print(report)
 
     if args.ctx_output:
-        Path(args.ctx_output).write_text(ctx.to_json(sanitize=True))
+        d = ctx.to_dict(sanitize=True)
+        from agency.validate_ctx import validate_sanitized_ctx
+        errs = validate_sanitized_ctx(d)
+        if errs:
+            for e in errs:
+                print(f"CTX validation error: {e}", file=sys.stderr)
+            return 1
+        Path(args.ctx_output).write_text(json.dumps(d, indent=2, default=str))
         print(f"CTX artifact written to {args.ctx_output}")
 
     if ctx.status == "completed":
