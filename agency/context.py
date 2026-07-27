@@ -164,7 +164,7 @@ class AgencyContextV1:
         "_engagement_proposals", "_engineering_proposals",
         "_transactions", "_incidents",
         "_audit", "status", "completed_at",
-        "_event_log", "_repo_provider",
+        "_event_log", "_repo_provider", "_evidence_index",
     )
 
     def __init__(self, trigger: str = "manual", shift: str = "morning",
@@ -197,6 +197,7 @@ class AgencyContextV1:
         self.campaign = campaign or {}
         self.policy = policy or {}
         self.budget = budget or AgencyBudget()
+        self._evidence_index: set[str] = set()  # durable cross-run dedup IDs
 
         # -- private collections (never exposed directly) --
         self._inbox: list[dict[str, Any]] = []
@@ -321,11 +322,14 @@ class AgencyContextV1:
             "base_sha": self.base_sha,
         }
         if role == "scout":
+            known = set(e.get("source_id") for e in self._accepted_evidence if e.get("source_id"))
+            # Merge with external evidence index (durable cross-run dedup)
+            ext_ids = getattr(self, '_evidence_index', None)
+            if ext_ids:
+                known.update(ext_ids)
             base.update({
                 "inbox": copy.deepcopy(self._inbox),
-                "accepted_evidence_ids": [
-                    e.get("source_id") for e in self._accepted_evidence
-                ],
+                "known_ids": list(known),
                 "source_candidates": copy.deepcopy(self._source_candidates),
             })
         elif role == "records_clerk":

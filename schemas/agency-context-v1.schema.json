@@ -7,6 +7,7 @@
   "properties": {
     "schema_version": {"type": "string", "const": "1.0"},
     "run_id": {"type": "string", "format": "uuid"},
+    "workflow_run_id": {"type": ["string", "null"]},
     "trigger": {"type": "string", "enum": ["scheduled", "manual", "dispatch"]},
     "shift": {"type": "string", "enum": ["morning", "evening"]},
     "started_at": {"type": "string", "format": "date-time"},

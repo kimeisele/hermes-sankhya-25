@@ -52,6 +52,7 @@ def build_role_registry(client: DeepSeekClient | None = None,
         sd = Path(__file__).resolve().parents[1] / "schemas"
         # Domain-specific output schemas per role
         scout_schema = json.loads((sd / "scout-output.schema.json").read_text())
+        clerk_schema = json.loads((sd / "records-clerk-output.schema.json").read_text())
         evidence_schema = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
         decision_schema = json.loads((sd / "agency-decision-v1.schema.json").read_text())
         engagement_schema = json.loads((sd / "engagement-proposal.schema.json").read_text())
@@ -63,7 +64,7 @@ def build_role_registry(client: DeepSeekClient | None = None,
                                          scout_schema, is_write_critical=False)
         clerk_adapter = RoleModelAdapter(client, client.flash_model,
                                          flash_system or "You normalize metadata and preserve provenance.",
-                                         scout_schema, is_write_critical=False)
+                                         clerk_schema, is_write_critical=False)
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or "You extract claims and classify evidence.",
                                             evidence_schema, is_write_critical=False)

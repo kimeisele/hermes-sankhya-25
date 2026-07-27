@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RecordsClerkOutput",
+  "type": "object",
+  "required": ["normalized"],
+  "properties": {
+    "normalized": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_id", "url", "author_handle", "content_type", "observed_at", "untrusted", "provenance"],
+        "properties": {
+          "source_id": {"type": "string"},
+          "url": {"type": "string"},
+          "author_handle": {"type": "string"},
+          "content_type": {"type": "string"},
+          "observed_at": {"type": "string", "format": "date-time"},
+          "untrusted": {"type": "boolean", "const": true},
+          "content_excerpt": {"type": "string", "maxLength": 500},
+          "paraphrase": {"type": "string", "maxLength": 1000},
+          "provenance": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

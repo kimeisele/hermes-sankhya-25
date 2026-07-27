@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import copy
 import datetime as _dt
-import hashlib
 import json
 import subprocess
 import uuid as _uuid
@@ -120,7 +119,7 @@ class ScoutRole:
 
     def __call__(self, ctx_view: dict[str, Any]) -> RoleResult:
         inbox = ctx_view.get("inbox", [])
-        existing = set(ctx_view.get("accepted_evidence_ids", []))
+        known = set(ctx_view.get("known_ids", ctx_view.get("accepted_evidence_ids", [])))
 
         # Bounded Moltbook read if reader is available and inbox is empty
         if self._moltbook and not inbox:
@@ -133,26 +132,30 @@ class ScoutRole:
                     # Add post itself
                     p = post.get("post", post)
                     if isinstance(p, dict) and p.get("id"):
+                        content = p.get("content", "")[:500]
                         items.append({
                             "id": p["id"], "url": f"https://www.moltbook.com/post/{p['id']}",
                             "author_handle": p.get("author", {}).get("name", "unknown"),
                             "content_type": "post", "untrusted": True,
+                            "content_excerpt": content,
                         })
                     # Add comments
                     for c in comments_resp.get("comments", []):
                         if isinstance(c, dict) and c.get("id"):
+                            content = c.get("content", "")[:500]
                             items.append({
                                 "id": c["id"],
                                 "url": f"https://www.moltbook.com/post/{target_id}#comments",
                                 "author_handle": c.get("author", {}).get("name", "unknown"),
                                 "content_type": "comment", "untrusted": True,
+                                "content_excerpt": content,
                             })
                     inbox = items
                 except Exception as exc:
                     return RoleResult(self.ROLE, "FAIL_CLOSED",
                                       fail_reason=f"Moltbook read failed: {exc}")
 
-        new = [i for i in inbox if i.get("id") not in existing]
+        new = [i for i in inbox if i.get("id") not in known]
         if not new:
             return RoleResult(self.ROLE, "NOOP", data={"candidates_found": 0})
 
@@ -187,9 +190,11 @@ class RecordsClerkRole:
         normalized = []
         for c in candidates:
             normalized.append({
+                "source_id": c.get("id", c.get("source_id", "")),
                 "url": c.get("url", ""), "author_handle": c.get("author_handle", "unknown"),
                 "content_type": c.get("content_type", "unknown"), "untrusted": True,
                 "observed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "content_excerpt": c.get("content_excerpt", ""),
                 "paraphrase": c.get("paraphrase", ""), "provenance": [c.get("url", "")],
             })
         return RoleResult(self.ROLE, "COMPLETE", data={"normalized": normalized})
@@ -295,24 +300,25 @@ class EngagementLeadRole:
             prop.setdefault("source_refs", [])
             prop.setdefault("base_sha", ctx_view.get("base_sha", ""))
             prop.setdefault("repository", "kimeisele/hermes-sankhya-25")
-            prop["content_hash"] = hashlib.sha256(
-                json.dumps(prop, sort_keys=True).encode()).hexdigest()
+            from agency.artifact import canonical_hash
+            prop["content_hash"] = canonical_hash(prop)
             return RoleResult(self.ROLE, "COMPLETE", data={"proposal": prop},
                               token_estimate=result.total_tokens,
                               cost_estimate=result.estimated_cost)
 
         # Deterministic fallback: create minimal proposal
+        from agency.artifact import canonical_hash
         prop = {
             "proposal_id": _uuid.uuid4().hex[:12],
             "target_content_id": target_id,
             "payload": {},
-            "content_hash": hashlib.sha256(b"{}").hexdigest(),
             "approval_state": "draft",
             "consumed": False,
             "source_refs": [],
             "base_sha": ctx_view.get("base_sha", ""),
             "repository": "kimeisele/hermes-sankhya-25",
         }
+        prop["content_hash"] = canonical_hash(prop)
         return RoleResult(self.ROLE, "COMPLETE", data={"proposal": prop})
 
 

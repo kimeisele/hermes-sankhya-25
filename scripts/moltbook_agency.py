@@ -35,10 +35,34 @@ def _load_config() -> dict:
     config_path = _repo_root / "config" / "moltbook_agency.toml"
     with open(config_path, "rb") as f:
         cfg = tomllib.load(f)
-    required = ["automation_enabled", "moltbook_read_only", "models", "budget"]
+    required = ["automation_enabled", "moltbook_read_only", "models", "budget",
+                "active_inquiry", "max_active_inquiries"]
     for field in required:
         if field not in cfg:
             raise ValueError(f"Missing required config field: {field}")
+    VALID_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+    models = cfg.get("models", {})
+    if models.get("flash", "") not in VALID_MODELS:
+        raise ValueError(f"Invalid flash model: {models.get('flash')}")
+    if models.get("pro", "") not in VALID_MODELS:
+        raise ValueError(f"Invalid pro model: {models.get('pro')}")
+    VALID_TIERS = {"flash", "pro", "deterministic"}
+    roles = cfg.get("roles", {})
+    for role in ["scout", "records_clerk", "evidence_analyst"]:
+        tier = roles.get(role, "")
+        if tier not in VALID_TIERS:
+            raise ValueError(f"Invalid role tier for {role}: {tier}")
+    if cfg.get("max_active_inquiries", 1) != 1:
+        raise ValueError("max_active_inquiries must be 1")
+    if not cfg.get("moltbook_read_only", True):
+        raise ValueError("moltbook_read_only must be true in Observe")
+    if cfg.get("allow_original_posts", False):
+        raise ValueError("allow_original_posts must be false")
+    budget = cfg.get("budget", {})
+    for k in ["max_role_calls", "max_tokens", "max_cost_estimate"]:
+        v = budget.get(k)
+        if v is None or v <= 0:
+            raise ValueError(f"budget.{k} must be positive, got {v}")
     return cfg
 
 

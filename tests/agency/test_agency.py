@@ -611,3 +611,122 @@ class TestSecurity:
         errors = validate_against_schema("not_an_object",
                                          {"type": "object"})
         assert len(errors) > 0
+
+
+# ---------------------------------------------------------------------------
+# Read-only E2E integration test
+# ---------------------------------------------------------------------------
+
+class TestReadOnlyE2E:
+    def test_full_read_only_shift(self):
+        """End-to-end: fake Moltbook → dedup → Scout → Clerk → Analyst → Director → CTX → HQ."""
+        sha = _make_sha("e2e")
+
+        # Fake Moltbook with known + new content
+        KNOWN_ID = "known-comment-1"
+        NEW_ID = "new-comment-1"
+
+        class FakeReader:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "Test post content about verification receipts.",
+                                 "author": {"name": "post_author"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [
+                    {"id": KNOWN_ID, "content": "Already analyzed: commit_hash is essential.",
+                     "author": {"name": "known_agent"}},
+                    {"id": NEW_ID, "content": "New claim: diff_url should be mandatory for code tasks.",
+                     "author": {"name": "new_agent"}},
+                ]}
+
+        # Evidence index with known_id → cross-run dedup
+        class P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        reg = build_role_registry(moltbook_reader=FakeReader())
+        orch = AgencyOrchestrator(
+            base_sha=sha, repo_provider=P(), role_registry=reg,
+            workflow_run_id="42",
+            campaign={"active_inquiry": "test-post", "objective": "Test inquiry"})
+        orch.ctx._evidence_index = {KNOWN_ID}  # simulate cross-run dedup
+
+        ctx = orch.run()
+
+        # Verify run completed
+        assert ctx.status == "completed"
+        assert ctx.workflow_run_id == "42"
+
+        # Known comment deduplicated
+        candidates = ctx.source_candidates
+        candidate_ids = {c.get("source_id", c.get("id")) for c in candidates}
+        assert KNOWN_ID not in candidate_ids, "Known comment should be deduplicated"
+        assert NEW_ID in candidate_ids, "New comment should be a candidate"
+
+        # Evidence reached analysis
+        evidence = ctx.accepted_evidence
+        assert len(evidence) > 0, "Evidence should be accepted"
+
+        # Check content_excerpt present
+        for c in candidates:
+            if c.get("source_id", c.get("id")) == NEW_ID:
+                assert "content_excerpt" in c
+                assert "diff_url" in c.get("content_excerpt", "")
+
+        # HQ + CTX share run_id
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert ctx.run_id[:12] in report
+
+        # CTX schema validation
+        import jsonschema
+        schema = json.loads(
+            (Path(__file__).resolve().parents[2] / "schemas" / "agency-context-v1.schema.json").read_text())
+        jsonschema.validate(instance=d, schema=schema)
+
+        # No write occurred
+        txn_count = len(ctx.transactions)
+        assert txn_count == 0, "No Moltbook writes in read-only mode"
+
+    def test_canonical_hash_consistency(self):
+        """Proposal hash passes its own canonical-hash validation."""
+        from agency.artifact import canonical_hash
+        from agency.roles import EngagementLeadRole
+        lead = EngagementLeadRole()
+        result = lead({"accepted_evidence": [{"source_id": "src-1"}],
+                       "decisions": [{"disposition": "PROPOSE_ENGAGEMENT"}],
+                       "campaign": {"active_inquiry": "test-id"},
+                       "base_sha": "a" * 40})
+        assert result.status == "COMPLETE"
+        prop = result.data["proposal"]
+        computed = canonical_hash(prop)
+        assert prop["content_hash"] == computed, "Canonical hash mismatch"
+        assert prop["approval_state"] == "draft"
+
+    def test_durable_dedup_known_rejected(self):
+        """Known ID is rejected; new ID is emitted as candidate."""
+        sha = _make_sha("dedup")
+
+        class FakeReader:
+            def fetch_post(self, pid):
+                return {"post": {"id": "post-1", "content": "x", "author": {"name": "a"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [
+                    {"id": "known-1", "content": "x", "author": {"name": "a"}},
+                    {"id": "new-1", "content": "y", "author": {"name": "b"}},
+                ]}
+
+        class P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        reg = build_role_registry(moltbook_reader=FakeReader())
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(),
+                                  role_registry=reg)
+        orch.ctx.campaign["active_inquiry"] = "test-post"
+        orch.ctx._evidence_index = {"known-1"}
+
+        ctx = orch.run()
+        candidates = ctx.source_candidates
+        ids = {c.get("source_id", c.get("id")) for c in candidates}
+        assert "known-1" not in ids
+        assert "new-1" in ids
