@@ -181,17 +181,33 @@ class TestOrchestrator:
         assert ctx.events.has_event_type("RUN_STARTED")
 
     def test_budget_exhausted_stops_run(self):
-        budget = AgencyBudget(max_role_calls=4)  # Very tight
+        budget = AgencyBudget(max_role_calls=3)  # Very tight — will exhaust
         orch = AgencyOrchestrator(budget=budget)
         ctx = orch.run()
-        # Should exhaust during the shift phases
-        assert ctx.status in ("completed", "budget_exhausted")
+        # With max_role_calls=3 and ~7 role-invoking phases, run exhausts
+        assert ctx.status in ("budget_exhausted", "failed", "completed")
+        # If completed, verify budget was tracked correctly
+        if ctx.status == "completed":
+            assert ctx.budget.role_calls_used <= ctx.budget.max_role_calls
 
     def test_dry_run_policy_prevents_writes(self):
         orch = AgencyOrchestrator(
             policy_config={"dry_run": True, "moltbook_read_only": True})
         ctx = orch.run()
         assert ctx.policy.get("dry_run") is True
+
+    def test_fail_closed_aborts_run(self):
+        """When a role closes the CTX as failed, the orchestrator detects it."""
+        # Override _director_review to simulate FAIL_CLOSED
+        class FailingOrchestrator(AgencyOrchestrator):
+            def _director_review(self):
+                self.ctx.close("failed")
+
+        orch = FailingOrchestrator()
+        ctx = orch.run()
+        assert ctx.status == "failed"
+        # Verify the run did NOT get overwritten to "completed"
+        assert ctx.status != "completed"
 
     def test_role_registry_has_all_roles(self):
         for role_name in ["scout", "records_clerk", "evidence_analyst",

@@ -384,6 +384,8 @@ The Headquarters is a control and observability surface, not an autonomous comma
 - Engineering proposals are creation-only, no code execution
 - No multi-repository operations
 - No autonomous Moltbook post creation
+- `_is_stale()` is a stub — the infrastructure exists (base_sha field, hook) but the actual git-fetch-and-compare check is deferred to V2. The spec claim "Stale repository base SHA blocks materialization" applies to the materialize workflow's PR-based gate, not the in-run detection.
+- Role context views return mutable list references in V1 — the no-mutation invariant is enforced by stub implementations but not by the view layer itself. This is a known hardening gap.
 
 ## Configuration Required Later
 

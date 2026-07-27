@@ -40,8 +40,8 @@ DIRECTOR_DISPOSITIONS = {
     "RECORD_ONLY": "RECORD_OR_PROPOSE",
     "PROPOSE_ENGAGEMENT": "BUILD_WORK_QUEUE",
     "PROPOSE_ENGINEERING_INTAKE": "BUILD_WORK_QUEUE",
-    "SYNTHESIS_QUEUE": "BUILD_WORK_QUEUE",
-    "HUMAN_ESCALATION": "AUDIT",
+    "READY_FOR_SYNTHESIS": "BUILD_WORK_QUEUE",
+    "ESCALATE_TO_HUMAN": "AUDIT",
 }
 
 
@@ -108,6 +108,10 @@ class AgencyOrchestrator:
                 elif phase == "CLOSE_BOOKS":
                     self._close_books()
                     break
+
+                # Check if a phase handler already closed the run
+                if self.ctx.status in ("failed", "budget_exhausted"):
+                    return self.ctx
 
                 # Check budget after each phase
                 if self.budget.is_exhausted:
