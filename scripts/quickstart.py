@@ -102,8 +102,8 @@ def main() -> int:
     print()
     if ok:
         print(f"{GREEN}{BOLD}Your federation node is ready.{RESET}")
-        print(f"Next: customize docs/authority/charter.md and docs/authority/capabilities.json")
-        print(f"Then: push to main and add the 'agent-federation-node' topic on GitHub\n")
+        print("Next: customize docs/authority/charter.md and docs/authority/capabilities.json")
+        print("Then: push to main and add the 'agent-federation-node' topic on GitHub\n")
     else:
         print(f"{RED}{BOLD}Some checks failed. See above for details.{RESET}\n")
 

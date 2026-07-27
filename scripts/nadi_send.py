@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import uuid
@@ -40,7 +39,7 @@ def _read_outbox() -> list:
         return []
     data = json.loads(text)
     if not isinstance(data, list):
-        print(f"warning: outbox is not an array, resetting", file=sys.stderr)
+        print("warning: outbox is not an array, resetting", file=sys.stderr)
         return []
     return data
 
@@ -88,7 +87,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         try:
             payload = json.loads(args.payload)
         except json.JSONDecodeError:
-            print(f"error: --payload must be valid JSON", file=sys.stderr)
+            print("error: --payload must be valid JSON", file=sys.stderr)
             return 1
 
     envelope = build_envelope(

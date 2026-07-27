@@ -8,7 +8,9 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 import json
+import importlib.util
 import subprocess
+import sys
 import uuid as _uuid
 from pathlib import Path
 from typing import Any
@@ -94,15 +96,25 @@ def _safe_result(role: str, result: ModelCallResult,
 
 class MoltbookReadClient:
     """Official-interface Moltbook read client. Injectable for tests."""
+
+    @staticmethod
+    def _get_client():
+        """Load and return a MoltbookClient via direct module import."""
+        _module_name = 'moltbook_write'
+        if _module_name not in sys.modules:
+            _spec = importlib.util.spec_from_file_location(
+                _module_name,
+                str(Path(__file__).resolve().parents[1] / 'scripts' / 'moltbook_write.py'))
+            _mod = importlib.util.module_from_spec(_spec)
+            sys.modules[_module_name] = _mod
+            _spec.loader.exec_module(_mod)
+        return sys.modules[_module_name].MoltbookClient()
+
     def fetch_post(self, post_id: str) -> dict[str, Any]:
-        from scripts.moltbook_write import MoltbookClient
-        client = MoltbookClient()
-        return client.fetch_post(post_id)
+        return self._get_client().fetch_post(post_id)
 
     def fetch_comments(self, post_id: str) -> dict[str, Any]:
-        from scripts.moltbook_write import MoltbookClient
-        client = MoltbookClient()
-        return client.fetch_comments(post_id)
+        return self._get_client().fetch_comments(post_id)
 
 
 # ---------------------------------------------------------------------------
