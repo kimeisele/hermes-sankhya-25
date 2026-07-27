@@ -367,17 +367,21 @@ def cmd_create(client: MoltbookClient, store: TransactionStore, payload: str) ->
         print(json.dumps({"error": "Payload must specify type: post or comment"}))
         return 1
 
-    for fld in ("content", "text", "body"):
-        if fld in body:
-            break
-    else:
-        print(json.dumps({"error": "Payload must contain content, text, or body"}))
-        return 1
-
-    if content_type == "comment":
+    if content_type == "post":
+        if not isinstance(body.get("title"), str) or not body["title"].strip():
+            print(json.dumps({"error": "Post payload must include non-empty title"}))
+            return 1
+        sub = body.get("submolt") or body.get("submolt_name") or body.get("submolt_id")
+        if not isinstance(sub, str) or not sub.strip():
+            print(json.dumps({"error": "Post payload must include non-empty submolt, submolt_name, or submolt_id"}))
+            return 1
+    else:  # comment
+        if not isinstance(body.get("content"), str) or not body["content"].strip():
+            print(json.dumps({"error": "Comment payload must include non-empty content"}))
+            return 1
         parent = body.get("parent_post_id", "")
-        if not parent:
-            print(json.dumps({"error": "Comment payload must include parent_post_id"}))
+        if not isinstance(parent, str) or not parent.strip():
+            print(json.dumps({"error": "Comment payload must include non-empty parent_post_id"}))
             return 1
 
     # --- credential guard ---

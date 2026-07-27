@@ -141,7 +141,7 @@ def test_credential_no_token_blocks_create(tmp_path: Path, monkeypatch) -> None:
     store = m.TransactionStore(tmp_path)
 
     exit_code = m.cmd_create(client, store,
-                             json.dumps({"content": "x", "type": "post"}))
+                             json.dumps({"title": "x", "submolt": "s", "type": "post"}))
     assert exit_code == 1
     # Zero network calls
     assert len(calls) == 0
@@ -156,7 +156,7 @@ def test_credential_token_never_persisted(tmp_path: Path, monkeypatch) -> None:
     store = m.TransactionStore(tmp_path)
 
     assert m.cmd_create(client, store,
-                        json.dumps({"content": "x", "type": "post"})) == 0
+                        json.dumps({"title": "x", "submolt": "s", "type": "post"})) == 0
 
     raw = (tmp_path / "data" / "moltbook" / "transactions.json").read_text()
     assert "secret_tok" not in raw
@@ -441,7 +441,7 @@ def test_malformed_missing_verification_object_persists(tmp_path: Path) -> None:
     store = m.TransactionStore(tmp_path)
 
     exit_code = m.cmd_create(client, store,
-                             json.dumps({"content": "x", "type": "post"}))
+                             json.dumps({"title": "x", "submolt": "s", "type": "post"}))
     assert exit_code == 1  # not success
 
     stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
@@ -462,7 +462,7 @@ def test_malformed_missing_vcode_persists(tmp_path: Path) -> None:
     store = m.TransactionStore(tmp_path)
 
     exit_code = m.cmd_create(client, store,
-                             json.dumps({"content": "x", "type": "post"}))
+                             json.dumps({"title": "x", "submolt": "s", "type": "post"}))
     assert exit_code == 1
     stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
     txn = stored[next(iter(stored))]
@@ -480,7 +480,7 @@ def test_malformed_missing_challenge_text_persists(tmp_path: Path) -> None:
     store = m.TransactionStore(tmp_path)
 
     exit_code = m.cmd_create(client, store,
-                             json.dumps({"content": "x", "type": "post"}))
+                             json.dumps({"title": "x", "submolt": "s", "type": "post"}))
     assert exit_code == 1
     stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
     txn = stored[next(iter(stored))]
@@ -499,7 +499,7 @@ def test_malformed_expired_challenge_creates_pending(tmp_path: Path) -> None:
     store = m.TransactionStore(tmp_path)
 
     exit_code = m.cmd_create(client, store,
-                             json.dumps({"content": "x", "type": "post"}))
+                             json.dumps({"title": "x", "submolt": "s", "type": "post"}))
     assert exit_code == 0  # structurally valid challenge
     stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
     txn = stored[next(iter(stored))]
@@ -552,7 +552,7 @@ def test_create_post(tmp_path: Path) -> None:
     store = m.TransactionStore(tmp_path)
 
     assert m.cmd_create(client, store,
-                        json.dumps({"content": "x", "type": "post"})) == 0
+                        json.dumps({"title": "x", "submolt": "s", "type": "post"})) == 0
 
     txn = store.load(next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text()))))
@@ -592,6 +592,132 @@ def test_create_rejects_comment_without_parent(tmp_path: Path) -> None:
     monkeypatch.setattr(m, "_get_token", lambda: "tok")
     assert m.cmd_create(_MockClient(), m.TransactionStore(tmp_path),
                         json.dumps({"content": "x", "type": "comment"})) == 1
+
+
+# ---------------------------------------------------------------------------
+# Content-type validation — posts
+# ---------------------------------------------------------------------------
+
+def test_post_requires_title_and_submolt(tmp_path: Path) -> None:
+    """Post with title + submolt is accepted."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_post_resp=_load_fixture("post_create_verified_pending.json"))
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"title": "Test", "submolt": "abc123", "type": "post"})) == 0
+
+
+def test_post_requires_title_and_submolt_name(tmp_path: Path) -> None:
+    """Post with title + submolt_name is accepted."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_post_resp=_load_fixture("post_create_verified_pending.json"))
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"title": "Test", "submolt_name": "some_sub", "type": "post"})) == 0
+
+
+def test_post_requires_title_and_submolt_id(tmp_path: Path) -> None:
+    """Post with title + submolt_id is accepted."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_post_resp=_load_fixture("post_create_verified_pending.json"))
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"title": "Test", "submolt_id": "id456", "type": "post"})) == 0
+
+
+def test_post_rejects_missing_title(tmp_path: Path) -> None:
+    """Post without title is rejected with zero create calls."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"submolt": "abc123", "type": "post"})) == 1
+    assert len(client.create_post_calls) == 0
+
+
+def test_post_rejects_missing_submolt_identifier(tmp_path: Path) -> None:
+    """Post without any Submolt identifier is rejected with zero create calls."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"title": "Test", "type": "post"})) == 1
+    assert len(client.create_post_calls) == 0
+
+
+def test_post_rejects_blank_title(tmp_path: Path) -> None:
+    """Post with blank title is rejected."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"title": "   ", "submolt": "abc", "type": "post"})) == 1
+    assert len(client.create_post_calls) == 0
+
+
+def test_post_no_dummy_content_required(tmp_path: Path) -> None:
+    """Valid post requires no dummy content/text/body field."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_post_resp=_load_fixture("post_create_verified_pending.json"))
+    store = m.TransactionStore(tmp_path)
+    payload = {"title": "Test", "submolt": "abc123", "type": "post"}
+    assert "content" not in payload
+    assert "text" not in payload
+    assert "body" not in payload
+    assert m.cmd_create(client, store, json.dumps(payload)) == 0
+
+
+# ---------------------------------------------------------------------------
+# Content-type validation — comments
+# ---------------------------------------------------------------------------
+
+def test_comment_requires_content_and_parent(tmp_path: Path) -> None:
+    """Comment with content + parent_post_id is accepted."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_comment_resp=_load_fixture("comment_create_verified_pending.json"))
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"content": "A reply", "type": "comment", "parent_post_id": "post_abc"})) == 0
+
+
+def test_comment_rejects_missing_content(tmp_path: Path) -> None:
+    """Comment without content is rejected with zero create calls."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"type": "comment", "parent_post_id": "post_abc"})) == 1
+    assert len(client.create_comment_calls) == 0
+
+
+def test_comment_rejects_blank_content(tmp_path: Path) -> None:
+    """Comment with blank content is rejected with zero create calls."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient()
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"content": "  ", "type": "comment", "parent_post_id": "post_abc"})) == 1
+    assert len(client.create_comment_calls) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +773,7 @@ def test_verify_post_happy(tmp_path: Path) -> None:
                          fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     store = m.TransactionStore(tmp_path)
 
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
+    assert m.cmd_create(client, store, json.dumps({"title": "x", "submolt": "s", "type": "post"})) == 0
     txn_id = next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
     assert m.cmd_verify(client, store, txn_id, "11") == 0
@@ -690,7 +816,7 @@ def test_verify_rejects_second_attempt(tmp_path: Path) -> None:
                          fetch_post_resp=_load_fixture("post_fetch_verified.json"))
     store = m.TransactionStore(tmp_path)
 
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
+    assert m.cmd_create(client, store, json.dumps({"title": "x", "submolt": "s", "type": "post"})) == 0
     txn_id = next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
     assert m.cmd_verify(client, store, txn_id, "11") == 0
@@ -772,7 +898,7 @@ def test_verify_timeout_recovers_if_verified(tmp_path: Path) -> None:
     client._verify_raises = RuntimeError("timed out")
     store = m.TransactionStore(tmp_path)
 
-    assert m.cmd_create(client, store, json.dumps({"content": "x", "type": "post"})) == 0
+    assert m.cmd_create(client, store, json.dumps({"title": "x", "submolt": "s", "type": "post"})) == 0
     txn_id = next(iter(json.loads(
         (tmp_path / "data" / "moltbook" / "transactions.json").read_text())))
     assert m.cmd_verify(client, store, txn_id, "11") == 0
@@ -830,7 +956,8 @@ def test_dry_run_transcript(tmp_path: Path) -> None:
 
     sys.stdout.write("=== CREATE ===\n")
     assert m.cmd_create(client, store, json.dumps({
-        "content": "What is the smallest practical receipt?",
+        "title": "What is the smallest practical receipt?",
+        "submolt": "s",
         "type": "post"})) == 0
 
     stored = json.loads((tmp_path / "data" / "moltbook" / "transactions.json").read_text())
