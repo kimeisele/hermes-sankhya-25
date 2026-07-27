@@ -61,10 +61,10 @@ jobs:
           budget = cfg.get('budget', {})
           assert budget.get('max_role_calls', 0) > 0, 'max_role_calls must be positive'
           assert budget.get('max_tokens', 0) > 0, 'max_tokens must be positive'
-          print(f'Config valid. automation_enabled={enabled}')
-          print(enabled)
+          print(f'Config valid. automation_enabled={enabled}', file=sys.stderr)
+          print(f'enabled={\"true\" if enabled else \"false\"}')
           " > /tmp/auto_enabled.txt
-          echo "enabled=$(cat /tmp/auto_enabled.txt)" >> "$GITHUB_OUTPUT"
+          cat /tmp/auto_enabled.txt >> "$GITHUB_OUTPUT"
 
       - name: Validate (disabled)
         if: steps.config.outputs.enabled != 'True'

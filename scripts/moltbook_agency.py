@@ -128,15 +128,16 @@ def main() -> int:
         campaign={"active_inquiry": cfg.get("active_inquiry", ""),
                   "objective": cfg.get("active_inquiry_objective", "")})
 
-    ctx = orch.run()
-
-    # Load durable evidence index for cross-run dedup
+    # Load durable evidence index BEFORE execution
     from agency.evidence_index import load_evidence_index
     try:
         evidence_ids = load_evidence_index()
-        ctx.set_evidence_index(evidence_ids)
-    except Exception:
-        pass  # non-fatal: dedup may be incomplete but run continues
+        orch.ctx.set_evidence_index(evidence_ids)
+    except Exception as exc:
+        print(f"Error loading evidence index: {exc}", file=sys.stderr)
+        return 1
+
+    ctx = orch.run()
 
     # Generate HQ report and CTX artifact from same run
     report = render_hq_markdown(ctx.to_dict(sanitize=True))
