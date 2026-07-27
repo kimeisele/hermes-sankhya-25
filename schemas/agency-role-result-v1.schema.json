@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-sankhya-25/agency-role-result-v1.schema.json",
+  "title": "AgencyRoleResultV1",
+  "type": "object",
+  "required": ["role", "status", "timestamp"],
+  "properties": {
+    "role": {"type": "string"},
+    "status": {"type": "string", "enum": ["COMPLETE", "NOOP", "DELEGATE", "NEED_CONTEXT", "ESCALATE", "FAIL_CLOSED"]},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "data": {"type": "object"},
+    "delegate_to": {"type": "string"},
+    "delegate_reason": {"type": "string"},
+    "escalation_reason": {"type": "string"},
+    "fail_reason": {"type": "string"},
+    "provenance": {"type": "array", "items": {"type": "string"}},
+    "token_estimate": {"type": "integer"},
+    "cost_estimate": {"type": "number"}
+  }
+}

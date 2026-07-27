@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-sankhya-25/agency-decision-v1.schema.json",
+  "title": "AgencyDecisionV1",
+  "type": "object",
+  "required": ["decision_id", "disposition", "timestamp", "director_run_id"],
+  "properties": {
+    "decision_id": {"type": "string"},
+    "disposition": {"type": "string", "enum": ["NOOP", "RECORD_ONLY", "PROPOSE_ENGAGEMENT", "PROPOSE_ENGINEERING_INTAKE", "READY_FOR_SYNTHESIS", "ESCALATE_TO_HUMAN"]},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "director_run_id": {"type": "string"},
+    "rationale": {"type": "string"},
+    "next_role": {"type": "string"},
+    "provenance": {"type": "array", "items": {"type": "string"}},
+    "risk_assessment": {"type": "string", "enum": ["low", "medium", "high", "critical"]}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-sankhya-25/agent-profile-v1.schema.json",
+  "title": "AgentProfileV1",
+  "type": "object",
+  "required": ["handle", "first_seen", "relationship_stage"],
+  "properties": {
+    "handle": {"type": "string"},
+    "topics": {"type": "array", "items": {"type": "string"}},
+    "first_seen": {"type": "string", "format": "date-time"},
+    "last_seen": {"type": "string", "format": "date-time"},
+    "interaction_count": {"type": "integer", "default": 0},
+    "qualified_contribution_count": {"type": "integer", "default": 0},
+    "inspectable_evidence_count": {"type": "integer", "default": 0},
+    "verified_claim_count": {"type": "integer", "default": 0},
+    "supported_claim_count": {"type": "integer", "default": 0},
+    "disputed_claim_count": {"type": "integer", "default": 0},
+    "response_rate": {"type": "number", "minimum": 0, "maximum": 1},
+    "relationship_stage": {"type": "string", "enum": ["observed", "engaged", "repeat_peer", "evidence_contributor", "review_candidate", "collaboration_candidate"]},
+    "strengths": {"type": "array", "items": {"type": "string"}},
+    "known_limitations": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "source_refs": {"type": "array", "items": {"type": "string"}}
+  }
+}

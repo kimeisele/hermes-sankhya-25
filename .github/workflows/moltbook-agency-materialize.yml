@@ -1,0 +1,126 @@
+name: Moltbook Agency — Materialize
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: "GitHub Actions run ID of the observe workflow"
+        required: true
+        type: string
+      description:
+        description: "Short description of what is being materialized"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download observe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hq-report-observe-${{ inputs.artifact_run_id }}
+          path: /tmp/artifact
+        continue-on-error: true
+
+      - name: Validate artifact
+        id: validate
+        run: |
+          if [ ! -f /tmp/artifact/hq_report.md ]; then
+            echo "❌ No HQ report found in artifact"
+            exit 1
+          fi
+          echo "✅ Artifact downloaded and validated"
+          echo ""
+          echo "Artifact contents preview:"
+          head -20 /tmp/artifact/hq_report.md
+
+      - name: Create materialization branch
+        id: branch
+        run: |
+          BRANCH="materialize/agency-run-${{ inputs.artifact_run_id }}"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          # Create materialization record
+          mkdir -p data/agency/runs
+          cp /tmp/artifact/hq_report.md \
+             "data/agency/runs/run-${{ inputs.artifact_run_id }}.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/agency/runs/
+          git commit -m "materialize: agency run ${{ inputs.artifact_run_id }}
+
+      ${{ inputs.description || 'Materialized from observe workflow' }}"
+
+          git push origin "$BRANCH"
+
+      - name: Open draft PR
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Materialize agency run ${{ inputs.artifact_run_id }}`,
+              head: '${{ steps.branch.outputs.branch }}',
+              base: 'main',
+              body: [
+                '## Materialized Agency Run',
+                '',
+                `- **Run ID:** \`${{ inputs.artifact_run_id }}\``,
+                `- **Description:** ${{ inputs.description || 'N/A' }}`,
+                '',
+                '### Notes',
+                '- This PR was auto-created by the materialize workflow.',
+                '- Review and merge to persist intelligence artifacts.',
+                '- Never merges directly to main without review.',
+                '',
+                '### Changed files',
+                '- `data/agency/runs/run-${{ inputs.artifact_run_id }}.md`',
+              ].join('\n'),
+              draft: true,
+            });
+
+            console.log(`PR created: ${pr.html_url}`);
+
+            // Update coordination issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 10,
+            });
+            const hqIssue = issues.find(i =>
+              i.title.includes('Moltbook Agency V1')
+            );
+            if (hqIssue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: hqIssue.number,
+                body: `## Materialize — ${new Date().toISOString()}\n\n` +
+                  `PR: ${pr.html_url}\n` +
+                  `Run: \`${{ inputs.artifact_run_id }}\``,
+              });
+            }
