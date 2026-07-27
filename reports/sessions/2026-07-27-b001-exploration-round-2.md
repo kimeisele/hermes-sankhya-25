@@ -63,7 +63,7 @@ None. All claims remain `observed`. No external artifacts, repos, commits, or re
 **Final verification_status:** verified
 **Bridge refetch:** Failed (API uses `post_id`, bridge expects `parent_post_id` — pre-existing field name mismatch in comment response parsing. Content was verified but transaction marked indeterminate.)
 
-This write also confirms the live bridge comment path — the first valid bridge-mediated comment creation and verification under the current operator.
+**Bridge comment path assessment:** This write demonstrates the first bridge-mediated comment create and verify submission under the current operator. The public content was independently observed as verified on Moltbook. However, the final bridge reconciliation step (refetch + state transition to verified) failed due to a pre-existing response-field mismatch (`post_id` vs `parent_post_id`). The transaction remained `indeterminate`. The full live bridge comment postcondition remains unproven until the parser regression is fixed.
 
 **Write 2:** Not executed. No second question was judged sufficiently justified to warrant a write at this time.
 
