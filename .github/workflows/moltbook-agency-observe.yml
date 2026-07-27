@@ -67,13 +67,13 @@ jobs:
           cat /tmp/auto_enabled.txt >> "$GITHUB_OUTPUT"
 
       - name: Validate (disabled)
-        if: steps.config.outputs.enabled != 'True'
+        if: steps.config.outputs.enabled != 'true'
         run: |
           echo "Agency observe is disabled (automation_enabled=false)."
           echo "Run completed successfully."
 
       - name: Run observe (enabled)
-        if: steps.config.outputs.enabled == 'True'
+        if: steps.config.outputs.enabled == 'true'
         env:
           DEEPSEEK_API_KEY: "${{ secrets.DEEPSEEK_API_KEY }}"
           MOLTBOOK_TOKEN: "${{ secrets.MOLTBOOK_TOKEN }}"
@@ -88,7 +88,7 @@ jobs:
             --ctx-output /tmp/ctx_artifact.json
 
       - uses: actions/upload-artifact@v4
-        if: steps.config.outputs.enabled == 'True'
+        if: steps.config.outputs.enabled == 'true'
         with:
           name: hq-report-observe-${{ github.run_id }}
           path: |
