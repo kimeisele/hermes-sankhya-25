@@ -1,10 +1,12 @@
 """Append-only event model for the Agency CTX.
 
-Events are immutable once appended. Every event carries a sequence number,
-timestamp, and optional provenance references.
+Events are deeply immutable once appended. Data, provenance, and all
+nested structures are deep-copied at append time. Returned representations
+do not expose mutable internal state.
 """
 from __future__ import annotations
 
+import copy
 import datetime as _dt
 from typing import Any
 
@@ -43,50 +45,74 @@ VALID_EVENT_TYPES = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Event object
+# Immutable event
 # ---------------------------------------------------------------------------
 
 class AgencyEvent:
-    """An immutable event in the agency event log."""
+    """An immutable event. All data is deep-copied at construction."""
 
-    __slots__ = ("event_type", "timestamp", "sequence", "data", "provenance")
+    __slots__ = ("_event_type", "_timestamp", "_sequence", "_data", "_provenance")
 
     def __init__(self, event_type: str, sequence: int,
                  data: dict[str, Any] | None = None,
                  provenance: list[str] | None = None) -> None:
         if event_type not in VALID_EVENT_TYPES:
             raise ValueError(f"Unknown event type: {event_type}")
-        self.event_type = event_type
-        self.timestamp = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        self.sequence = sequence
-        self.data = data or {}
-        self.provenance = provenance or []
+        self._event_type = event_type
+        self._timestamp = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        self._sequence = sequence
+        self._data = copy.deepcopy(data) if data else {}
+        self._provenance = list(provenance) if provenance else []
+
+    @property
+    def event_type(self) -> str:
+        return self._event_type
+
+    @property
+    def timestamp(self) -> str:
+        return self._timestamp
+
+    @property
+    def sequence(self) -> int:
+        return self._sequence
+
+    @property
+    def data(self) -> dict[str, Any]:
+        return copy.deepcopy(self._data)
+
+    @property
+    def provenance(self) -> list[str]:
+        return list(self._provenance)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "event_type": self.event_type,
-            "timestamp": self.timestamp,
-            "sequence": self.sequence,
-            "data": self.data,
-            "provenance": self.provenance,
+            "event_type": self._event_type,
+            "timestamp": self._timestamp,
+            "sequence": self._sequence,
+            "data": copy.deepcopy(self._data),
+            "provenance": list(self._provenance),
         }
 
     def __repr__(self) -> str:
-        return f"AgencyEvent({self.event_type}, seq={self.sequence})"
+        return f"AgencyEvent({self._event_type}, seq={self._sequence})"
 
 
 # ---------------------------------------------------------------------------
-# Event log
+# Append-only event log
 # ---------------------------------------------------------------------------
 
 class EventLog:
-    """Append-only event log for a single agency run."""
+    """Append-only event log. Events cannot be deleted, replaced, or
+    mutated through any public API."""
 
     def __init__(self) -> None:
         self._events: list[AgencyEvent] = []
+        self._frozen = False
 
     def append(self, event_type: str, data: dict[str, Any] | None = None,
                provenance: list[str] | None = None) -> AgencyEvent:
+        if self._frozen:
+            raise RuntimeError("Cannot append to frozen EventLog")
         event = AgencyEvent(event_type, len(self._events), data, provenance)
         self._events.append(event)
         return event
@@ -107,3 +133,7 @@ class EventLog:
 
     def has_event_type(self, event_type: str) -> bool:
         return any(e.event_type == event_type for e in self._events)
+
+    def freeze(self) -> None:
+        """Prevent further appends. Idempotent."""
+        self._frozen = True

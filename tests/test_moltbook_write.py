@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import pytest
 import subprocess
 import sys
 import time
@@ -812,14 +813,13 @@ def test_comment_refetch_falls_back_to_list_with_real_shape(tmp_path: Path) -> N
 
 
 def test_comment_malformed_real_shape_fails_closed(tmp_path: Path) -> None:
-    """Malformed response with neither post_id nor parent_post_id raises."""
+    """Malformed response with neither post_id nor parent_post_id raises RuntimeError."""
     m = _load_bridge_module()
-    identity = m._extract_content_identity({
-        "success": True,
-        "comment": {"id": "c1", "content": "x"},
-    }, "comment")
-    # parent_post_id should be empty string since neither field exists
-    assert identity["parent_post_id"] == ""
+    with pytest.raises(RuntimeError, match="Missing parent identifier"):
+        m._extract_content_identity({
+            "success": True,
+            "comment": {"id": "c1", "content": "x"},
+        }, "comment")
 
 
 def test_comment_no_duplicate_verify_with_real_shape(tmp_path: Path) -> None:

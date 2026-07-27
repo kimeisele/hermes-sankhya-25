@@ -1,32 +1,19 @@
-"""Moltbook Headquarters V1 — sanitized CTX dashboard.
-
-Renders a Markdown dashboard from a completed AgencyContextV1.
-Never displays secrets, raw posts, or hidden model reasoning.
-"""
+"""Moltbook Headquarters V1 — sanitized CTX dashboard."""
 from __future__ import annotations
 
 from typing import Any
 
 
 def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
-    """Render a sanitized Headquarters Markdown dashboard.
-
-    Args:
-        ctx_dict: Sanitized CTX dictionary (from ctx.to_dict(sanitize=True))
-
-    Returns:
-        Markdown string suitable for issue comments or job summaries.
-    """
+    """Render a sanitized Headquarters Markdown dashboard."""
     lines: list[str] = []
 
-    # Header
     lines.append("# Moltbook Headquarters — Agency Run Summary")
     lines.append("")
-    lines.append(f"**Run ID:** `{ctx_dict.get('run_id', 'N/A')}`")
+    lines.append(f"**Run ID:** `{ctx_dict.get('run_id', 'N/A')[:12]}`")
     lines.append(f"**Trigger:** {ctx_dict.get('trigger', 'N/A')}")
     lines.append(f"**Shift:** {ctx_dict.get('shift', 'N/A')}")
     lines.append(f"**Started:** {ctx_dict.get('started_at', 'N/A')}")
-    lines.append(f"**Repository:** {ctx_dict.get('repository', 'N/A')}")
     lines.append(f"**Base SHA:** `{ctx_dict.get('base_sha', 'N/A')[:12]}`")
     lines.append(f"**Status:** {ctx_dict.get('status', 'N/A')}")
     lines.append(f"**Completed:** {ctx_dict.get('completed_at', 'N/A')}")
@@ -35,32 +22,101 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
     # Campaign
     campaign = ctx_dict.get("campaign", {})
     if campaign:
-        lines.append("## Active Campaign")
-        lines.append(f"- **Objective:** {campaign.get('objective', 'N/A')}")
-        lines.append(f"- **Phase:** {campaign.get('phase', 'N/A')}")
+        lines.append("## Active Inquiry")
+        lines.append(f"- {campaign.get('objective', campaign.get('title', 'N/A'))}")
+        lines.append("")
+
+    # Evidence
+    evidence = ctx_dict.get("accepted_evidence", [])
+    if evidence:
+        lines.append(f"## Accepted Evidence ({len(evidence)})")
+        for e in evidence[:10]:
+            if isinstance(e, dict):
+                lines.append(f"- `{e.get('source_id', e.get('url', '?'))[:40]}` — "
+                             f"{e.get('author_handle', '?')}")
+        lines.append("")
+
+    # Decisions
+    decisions = ctx_dict.get("decisions", [])
+    if decisions:
+        lines.append("## Director Decisions")
+        for d in decisions:
+            if isinstance(d, dict):
+                lines.append(f"- {d.get('disposition', '?')}: "
+                             f"{d.get('rationale', '')[:80]}")
+        lines.append("")
+
+    # Engagement proposals
+    eng_props = ctx_dict.get("engagement_proposals", [])
+    if eng_props:
+        lines.append(f"## Engagement Proposals ({len(eng_props)})")
+        for p in eng_props:
+            if isinstance(p, dict):
+                lines.append(f"- `{p.get('proposal_id', p.get('id', '?'))[:20]}`")
+        lines.append("")
+
+    # Engineering proposals
+    engr_props = ctx_dict.get("engineering_proposals", [])
+    if engr_props:
+        lines.append(f"## Engineering Proposals ({len(engr_props)})")
+        for p in engr_props:
+            if isinstance(p, dict):
+                lines.append(f"- {p.get('title', p.get('problem', '?'))[:80]}")
+        lines.append("")
+
+    # Transactions
+    transactions = ctx_dict.get("transactions", [])
+    if transactions:
+        lines.append(f"## Moltbook Transactions ({len(transactions)})")
+        for t in transactions:
+            if isinstance(t, dict):
+                lines.append(f"- `{t.get('transaction_id', '?')[:12]}` → "
+                             f"{t.get('state', t.get('status', '?'))}")
+        lines.append("")
+
+    # Incidents
+    incidents = ctx_dict.get("incidents", [])
+    if incidents:
+        lines.append(f"## Incidents ({len(incidents)})")
+        for inc in incidents:
+            if isinstance(inc, dict):
+                lines.append(f"- [{inc.get('severity', '?')}] "
+                             f"{inc.get('description', '?')[:100]}")
+        lines.append("")
+
+    # Profiles
+    profiles = ctx_dict.get("agent_profiles", {})
+    if profiles:
+        lines.append(f"## External Agent Profiles ({len(profiles)})")
+        for handle, prof in list(profiles.items())[:10]:
+            if isinstance(prof, dict):
+                stage = prof.get("relationship_stage", "?")
+                contribs = prof.get("qualified_contribution_count", 0)
+                lines.append(f"- **{handle}** — {stage} ({contribs} contributions)")
         lines.append("")
 
     # Budget
     budget = ctx_dict.get("budget", {})
     if budget:
         lines.append("## Budget")
-        lines.append(f"- Role calls: {budget.get('role_calls_used', 0)} / {budget.get('max_role_calls', 0)}")
-        lines.append(f"- Delegation rounds: {budget.get('delegation_rounds_used', 0)} / {budget.get('max_delegation_rounds', 0)}")
-        lines.append(f"- Tokens: {budget.get('tokens_used', 0)} / {budget.get('max_tokens', 0)}")
-        lines.append(f"- Cost estimate: ${budget.get('cost_estimate_used', 0):.4f} / ${budget.get('max_cost_estimate', 0):.2f}")
+        lines.append("| Resource | Used | Limit |")
+        lines.append("|---|---|---|")
+        lines.append(f"| Role calls | {budget.get('role_calls_used', 0)} | {budget.get('max_role_calls', 0)} |")
+        lines.append(f"| Delegations | {budget.get('delegation_rounds_used', 0)} | {budget.get('max_delegation_rounds', 0)} |")
+        lines.append(f"| Tokens | {budget.get('tokens_used', 0)} | {budget.get('max_tokens', 0)} |")
+        lines.append(f"| Cost | ${budget.get('cost_estimate_used', 0):.4f} | ${budget.get('max_cost_estimate', 0):.2f} |")
         lines.append("")
 
     # Events summary
     events = ctx_dict.get("events", [])
     if events:
-        lines.append("## Event Summary")
-        lines.append(f"Total events: {len(events)}")
-        event_types: dict[str, int] = {}
+        lines.append(f"## Event Log ({len(events)} events)")
+        event_counts: dict[str, int] = {}
         for e in events:
             et = e.get("event_type", "UNKNOWN")
-            event_types[et] = event_types.get(et, 0) + 1
-        for et, count in sorted(event_types.items()):
-            lines.append(f"- {et}: {count}")
+            event_counts[et] = event_counts.get(et, 0) + 1
+        for et, cnt in sorted(event_counts.items()):
+            lines.append(f"- {et}: {cnt}")
         lines.append("")
 
     # Policy
@@ -68,23 +124,41 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
     if policy:
         lines.append("## Policy")
         lines.append(f"- Dry run: {policy.get('dry_run', True)}")
-        lines.append(f"- Automation enabled: {policy.get('automation_enabled', False)}")
-        lines.append(f"- Moltbook read-only: {policy.get('moltbook_read_only', True)}")
+        lines.append(f"- Read-only: {policy.get('moltbook_read_only', True)}")
         lines.append("")
 
-    # Security notice
-    lines.append("---")
+    # Audit
+    audit = ctx_dict.get("audit", {})
+    if audit:
+        passed = audit.get("passed", False)
+        findings = audit.get("findings", [])
+        status_icon = "✅" if passed else "⚠️"
+        lines.append(f"## Audit {status_icon}")
+        if findings:
+            for f in findings:
+                lines.append(f"- {f}")
+        lines.append("")
+
+    # Next action
+    lines.append("## Next Action")
+    status = ctx_dict.get("status", "")
+    if status == "completed":
+        lines.append("- Review run artifact and accept/reject proposals")
+    elif status == "budget_exhausted":
+        lines.append("- Budget exhausted — increase limits or reduce scope")
+    elif status == "failed":
+        lines.append("- Investigate incidents and re-run")
     lines.append("")
-    lines.append("*Moltbook Headquarters V1 — control and observability surface only. No secrets, credentials, or raw external content are displayed.*")
+
+    lines.append("---")
+    lines.append("*Moltbook Headquarters V1 — sanitized control surface.*")
     lines.append("")
 
     return "\n".join(lines)
 
 
 def render_hq_html(ctx_dict: dict[str, Any]) -> str:
-    """Render a minimal HTML dashboard."""
     md = render_hq_markdown(ctx_dict)
-    # Minimal HTML wrapper
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -94,6 +168,8 @@ def render_hq_html(ctx_dict: dict[str, Any]) -> str:
 body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }}
 h1 {{ border-bottom: 2px solid #333; }}
 code {{ background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }}
+table {{ border-collapse: collapse; }}
+td, th {{ border: 1px solid #ddd; padding: 4px 8px; }}
 </style>
 </head>
 <body>
