@@ -681,6 +681,17 @@ def test_post_no_dummy_content_required(tmp_path: Path) -> None:
     assert m.cmd_create(client, store, json.dumps(payload)) == 0
 
 
+def test_post_blank_submolt_does_not_mask_valid_later(tmp_path: Path) -> None:
+    """Blank submolt does not mask a valid submolt_name later in the payload."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+    client = _MockClient(create_post_resp=_load_fixture("post_create_verified_pending.json"))
+    store = m.TransactionStore(tmp_path)
+    assert m.cmd_create(client, store,
+        json.dumps({"title": "Test", "submolt": "   ", "submolt_name": "introductions", "type": "post"})) == 0
+
+
 # ---------------------------------------------------------------------------
 # Content-type validation — comments
 # ---------------------------------------------------------------------------

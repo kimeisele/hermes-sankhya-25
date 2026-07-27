@@ -371,8 +371,12 @@ def cmd_create(client: MoltbookClient, store: TransactionStore, payload: str) ->
         if not isinstance(body.get("title"), str) or not body["title"].strip():
             print(json.dumps({"error": "Post payload must include non-empty title"}))
             return 1
-        sub = body.get("submolt") or body.get("submolt_name") or body.get("submolt_id")
-        if not isinstance(sub, str) or not sub.strip():
+        submolt_fields = ("submolt", "submolt_name", "submolt_id")
+        has_submolt = any(
+            isinstance(body.get(field), str) and body[field].strip()
+            for field in submolt_fields
+        )
+        if not has_submolt:
             print(json.dumps({"error": "Post payload must include non-empty submolt, submolt_name, or submolt_id"}))
             return 1
     else:  # comment
