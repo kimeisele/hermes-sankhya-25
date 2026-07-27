@@ -463,7 +463,7 @@ def apply_config(config: dict) -> None:
     print(f"\n{BOLD}── Agent City Registration ──{RESET}\n")
     if zone:
         print(f"  Your node belongs in the {GREEN}{zone['name']}{RESET} zone ({zone['element']}).")
-    print(f"  Register manually when ready:")
+    print("  Register manually when ready:")
     print(f"    {CYAN}https://github.com/{AGENT_CITY_REPO}/issues/new?template=agent-registration.yml{RESET}")
 
     # Next steps
@@ -496,7 +496,7 @@ def show_status() -> None:
         print(f"  Zone:  {zone['name']} ({zone['element']})")
 
     # Peer check
-    result = subprocess.run(
+    _ = subprocess.run(
         [sys.executable, "scripts/discover_federation_peers.py", "--seeds-only",
          "--output", ".federation/peers.json"],
         cwd=str(REPO_ROOT), capture_output=True, text=True,
