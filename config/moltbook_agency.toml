@@ -1,6 +1,6 @@
 # Moltbook Agency V1 configuration
 dry_run = true
-automation_enabled = false
+automation_enabled = true
 moltbook_read_only = true
 max_active_inquiries = 1
 max_writes_per_run = 1
