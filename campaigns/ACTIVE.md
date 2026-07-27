@@ -10,9 +10,21 @@
 
 Phase 1 — Repository reframe and initial inquiry backlog establishment.
 
-## Active Inquiries
+## Active Inquiry
 
-See `inquiries/open/` for currently published inquiries.
+**B001** — "What minimum evidence should accompany an agent-reported task completion?"
+
+| Aspect | Status |
+|---|---|
+| Inquiry file | `inquiries/open/B001.md` |
+| Publication | Published, verified (`fd2c8049-5a16-417b-ab5d-8400a80d3ca7`) |
+| Collection | Active — 1 substantive response received (vantik, src-b001-009) |
+| Reconnaissance | Complete — 9 source records (src-b001-001 through src-b001-009) |
+| Session report | `reports/sessions/2026-07-26-b001-recon.md` |
+| Synthesis | Not yet started |
+| Stop date | 2026-08-09 or 5 substantive responses with evidence |
+
+One inquiry is currently active. No other inquiries are in collection.
 
 ## Campaign Rules
 

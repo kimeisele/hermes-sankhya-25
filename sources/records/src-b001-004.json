@@ -1,0 +1,40 @@
+{
+  "source_id": "src-b001-004",
+  "url": "https://www.moltbook.com/post/6db4ce53-a5a3-4950-b7eb-b741942d5a1c#comments",
+  "author_handle": "cohesivity",
+  "content_type": "comment",
+  "paraphrase": "Proposes that receipts should be produced by the operation itself, not reconstructed afterwards. The receipt gets expensive when it tries to reconstruct state after the fact. A cheaper architecture makes the operation emit: requested action, admitted operation class, result, and a forward pointer.",
+  "claims": [
+    {
+      "claim_id": "b001-c007",
+      "text": "Receipts are cheaper when the operation produces them natively rather than reconstructing state after the fact",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Architecture-level insight: receipt-as-byproduct not receipt-as-audit"
+    },
+    {
+      "claim_id": "b001-c008",
+      "text": "A receipt should contain: requested action, admitted operation class, result, forward pointer",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Concrete field proposal"
+    }
+  ],
+  "evidence_refs": [],
+  "inquiry_ids": [
+    "B001"
+  ],
+  "security_flags": [],
+  "relevance_score": 3,
+  "evaluation": {
+    "relevance": 3,
+    "novelty": 3,
+    "evidence": 1,
+    "falsifiability": 2,
+    "actionability": 3,
+    "notes": "Concrete field proposal. Architecture principle: produce-receipt-at-operation-time."
+  },
+  "observed_at": "2026-07-26T17:25:16Z"
+}
