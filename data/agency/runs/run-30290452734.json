@@ -1,0 +1,366 @@
+{
+  "schema_version": "1.0",
+  "run_id": "913ade64-40f4-48ee-8b07-003b9f154bd7",
+  "workflow_run_id": "30290452734",
+  "trigger": "manual",
+  "shift": "evening",
+  "started_at": "2026-07-27T17:42:54.893858+00:00",
+  "repository": "kimeisele/hermes-sankhya-25",
+  "base_sha": "53f2a01ecb27cbd6381da0475aeace853381a0c2",
+  "campaign": {
+    "active_inquiry": "fd2c8049-5a16-417b-ab5d-8400a80d3ca7",
+    "objective": ""
+  },
+  "policy": {
+    "dry_run": false,
+    "automation_enabled": true,
+    "moltbook_read_only": true,
+    "max_active_inquiries": 1,
+    "max_writes_per_run": 1,
+    "require_approval_for_write": true,
+    "allow_original_posts": false
+  },
+  "budget": {
+    "max_role_calls": 20,
+    "max_delegation_rounds": 5,
+    "max_tokens": 100000,
+    "max_cost_estimate": 5.0,
+    "max_duration_seconds": 600,
+    "role_calls_used": 5,
+    "delegation_rounds_used": 0,
+    "tokens_used": 11460,
+    "cost_estimate_used": 0.0032520100000000014
+  },
+  "status": "completed",
+  "completed_at": "2026-07-27T17:43:37.022743+00:00",
+  "events": [
+    {
+      "event_type": "RUN_STARTED",
+      "timestamp": "2026-07-27T17:42:54.893895+00:00",
+      "sequence": 0,
+      "data": {
+        "run_id": "913ade64-40f4-48ee-8b07-003b9f154bd7",
+        "trigger": "manual",
+        "base_sha": "53f2a01ecb27cbd6381da0475aeace853381a0c2"
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "CAMPAIGN_LOADED",
+      "timestamp": "2026-07-27T17:42:54.899603+00:00",
+      "sequence": 1,
+      "data": {
+        "campaign": {
+          "active_inquiry": "fd2c8049-5a16-417b-ab5d-8400a80d3ca7",
+          "objective": ""
+        }
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_COMPLETED",
+      "timestamp": "2026-07-27T17:43:07.187801+00:00",
+      "sequence": 2,
+      "data": {
+        "role": "scout",
+        "status": "COMPLETE",
+        "timestamp": "2026-07-27T17:43:07.187719+00:00",
+        "data": {
+          "candidates_found": 6,
+          "candidates": [
+            {
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "id": "ffddfb46-6e93-4922-bed8-57c94b2a8f64",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment"
+            },
+            {
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "id": "e2f448c6-a9a3-4c7f-b47e-ddf6d0e68d41",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment"
+            },
+            {
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "id": "a9d7a59d-0e57-4bf3-8bab-26d80a1906d0",
+              "author_handle": "vantik",
+              "content_type": "comment"
+            },
+            {
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "id": "8af5ebd2-fc3d-4a54-bd2e-1b165150e5d2",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment"
+            },
+            {
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "id": "614f85c3-83ed-42e2-bf58-23e37b661f99",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment"
+            },
+            {
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "id": "12d95147-f69e-4b3e-99c7-35eed3c3d610",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment"
+            }
+          ]
+        },
+        "delegate_to": "",
+        "delegate_reason": "",
+        "escalation_reason": "",
+        "fail_reason": "",
+        "provenance": [],
+        "token_estimate": 3717,
+        "cost_estimate": 0.0007833000000000001
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_COMPLETED",
+      "timestamp": "2026-07-27T17:43:20.526858+00:00",
+      "sequence": 3,
+      "data": {
+        "role": "records_clerk",
+        "status": "COMPLETE",
+        "timestamp": "2026-07-27T17:43:20.526779+00:00",
+        "data": {
+          "normalized": [
+            {
+              "source_id": "ffddfb46-6e93-4922-bed8-57c94b2a8f64",
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment",
+              "observed_at": "2025-03-18T12:00:00Z",
+              "untrusted": true,
+              "provenance": [
+                "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7",
+                "source_id:ffddfb46-6e93-4922-bed8-57c94b2a8f64"
+              ]
+            },
+            {
+              "source_id": "e2f448c6-a9a3-4c7f-b47e-ddf6d0e68d41",
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment",
+              "observed_at": "2025-03-18T12:00:00Z",
+              "untrusted": true,
+              "provenance": [
+                "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7",
+                "source_id:e2f448c6-a9a3-4c7f-b47e-ddf6d0e68d41"
+              ]
+            },
+            {
+              "source_id": "a9d7a59d-0e57-4bf3-8bab-26d80a1906d0",
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "author_handle": "vantik",
+              "content_type": "comment",
+              "observed_at": "2025-03-18T12:00:00Z",
+              "untrusted": true,
+              "provenance": [
+                "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7",
+                "source_id:a9d7a59d-0e57-4bf3-8bab-26d80a1906d0"
+              ]
+            },
+            {
+              "source_id": "8af5ebd2-fc3d-4a54-bd2e-1b165150e5d2",
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment",
+              "observed_at": "2025-03-18T12:00:00Z",
+              "untrusted": true,
+              "provenance": [
+                "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7",
+                "source_id:8af5ebd2-fc3d-4a54-bd2e-1b165150e5d2"
+              ]
+            },
+            {
+              "source_id": "614f85c3-83ed-42e2-bf58-23e37b661f99",
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment",
+              "observed_at": "2025-03-18T12:00:00Z",
+              "untrusted": true,
+              "provenance": [
+                "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7",
+                "source_id:614f85c3-83ed-42e2-bf58-23e37b661f99"
+              ]
+            },
+            {
+              "source_id": "12d95147-f69e-4b3e-99c7-35eed3c3d610",
+              "url": "https://www.moltbook.com/post/fd2c8049-5a16-417b-ab5d-8400a80d3ca7#comments",
+              "author_handle": "hermes-sankhya-25",
+              "content_type": "comment",
+              "observed_at": "2025-03-18T12:00:00Z",
+              "untrusted": true,
+              "provenance": [
+                "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7",
+                "source_id:12d95147-f69e-4b3e-99c7-35eed3c3d610"
+              ]
+            }
+          ]
+        },
+        "delegate_to": "",
+        "delegate_reason": "",
+        "escalation_reason": "",
+        "fail_reason": "",
+        "provenance": [],
+        "token_estimate": 3561,
+        "cost_estimate": 0.0007835800000000001
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_COMPLETED",
+      "timestamp": "2026-07-27T17:43:24.105847+00:00",
+      "sequence": 4,
+      "data": {
+        "role": "evidence_analyst",
+        "status": "COMPLETE",
+        "timestamp": "2026-07-27T17:43:24.105797+00:00",
+        "data": {
+          "accepted": [],
+          "rejected": [],
+          "claims": [],
+          "scores": {},
+          "rationale": "No text content provided in source candidates; unable to extract claims or classify evidence."
+        },
+        "delegate_to": "",
+        "delegate_reason": "",
+        "escalation_reason": "",
+        "fail_reason": "",
+        "provenance": [],
+        "token_estimate": 1709,
+        "cost_estimate": 0.00028182000000000006
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "SOURCE_ACCEPTED",
+      "timestamp": "2026-07-27T17:43:24.105875+00:00",
+      "sequence": 5,
+      "data": {
+        "accepted": 0,
+        "rejected": 0
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_COMPLETED",
+      "timestamp": "2026-07-27T17:43:37.017579+00:00",
+      "sequence": 6,
+      "data": {
+        "role": "agency_director",
+        "status": "COMPLETE",
+        "timestamp": "2026-07-27T17:43:37.017529+00:00",
+        "data": {
+          "decision_id": "b8e5a1c7-3d2f-4f7a-8b1e-6c9d4e2f0a3b",
+          "disposition": "RECORD_ONLY",
+          "timestamp": "2025-03-18T12:00:00Z",
+          "director_run_id": "913ade64-40f4-48ee-8b07-003b9f154bd7",
+          "rationale": "Untrusted moltbook comments with no content provided; recording for potential future review.",
+          "provenance": [
+            "run_id:913ade64-40f4-48ee-8b07-003b9f154bd7"
+          ],
+          "risk_assessment": "low"
+        },
+        "delegate_to": "",
+        "delegate_reason": "",
+        "escalation_reason": "",
+        "fail_reason": "",
+        "provenance": [],
+        "token_estimate": 2473,
+        "cost_estimate": 0.0014033099999999998
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "DIRECTOR_DECISION",
+      "timestamp": "2026-07-27T17:43:37.017619+00:00",
+      "sequence": 7,
+      "data": {
+        "disposition": "RECORD_ONLY",
+        "rationale": "Untrusted moltbook comments with no content provided; recording for potential future review."
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_STARTED",
+      "timestamp": "2026-07-27T17:43:37.019716+00:00",
+      "sequence": 8,
+      "data": {
+        "phase": "RECORD_OR_PROPOSE"
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_STARTED",
+      "timestamp": "2026-07-27T17:43:37.021193+00:00",
+      "sequence": 9,
+      "data": {
+        "phase": "AUDIT"
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_COMPLETED",
+      "timestamp": "2026-07-27T17:43:37.021256+00:00",
+      "sequence": 10,
+      "data": {
+        "role": "auditor",
+        "status": "COMPLETE",
+        "timestamp": "2026-07-27T17:43:37.021245+00:00",
+        "data": {
+          "findings": [],
+          "passed": true
+        },
+        "delegate_to": "",
+        "delegate_reason": "",
+        "escalation_reason": "",
+        "fail_reason": "",
+        "provenance": [],
+        "token_estimate": 0,
+        "cost_estimate": 0.0
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "ROLE_STARTED",
+      "timestamp": "2026-07-27T17:43:37.022731+00:00",
+      "sequence": 11,
+      "data": {
+        "phase": "CLOSE_BOOKS"
+      },
+      "provenance": []
+    },
+    {
+      "event_type": "RUN_CLOSED",
+      "timestamp": "2026-07-27T17:43:37.022747+00:00",
+      "sequence": 12,
+      "data": {
+        "status": "completed",
+        "completed_at": "2026-07-27T17:43:37.022743+00:00"
+      },
+      "provenance": []
+    }
+  ],
+  "accepted_evidence": [],
+  "decisions": [
+    {
+      "disposition": "RECORD_ONLY",
+      "timestamp": "2026-07-27T17:43:37.017529+00:00",
+      "rationale": "Untrusted moltbook comments with no content provided; recording for potential future review."
+    }
+  ],
+  "work_queue": [],
+  "engagement_proposals": [],
+  "engineering_proposals": [],
+  "transactions": [],
+  "incidents": [],
+  "audit": {
+    "findings": [],
+    "passed": true,
+    "timestamp": "2026-07-27T17:43:37.021245+00:00"
+  },
+  "agent_profiles": {}
+}
