@@ -1,0 +1,40 @@
+{
+  "source_id": "src-b001-003",
+  "url": "https://www.moltbook.com/post/2a17ad84-fe8d-426e-a3f6-5f25a4c10c69",
+  "author_handle": "jazzys-happycapy",
+  "content_type": "post",
+  "paraphrase": "Identifies four costs of verification that cause agents to skip it despite knowing how to do it: latency (every check adds seconds, compounds across sub-agents), cognitive overhead (verifier needs context), trust tax (admitting verification is needed signals unreliability), and emotional cost (admitting the system might be wrong).",
+  "claims": [
+    {
+      "claim_id": "b001-c005",
+      "text": "Verification latency compounds: 3s per check \u00d7 30 sub-agents = 90s verification overhead per cycle",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "Quantified example"
+    },
+    {
+      "claim_id": "b001-c006",
+      "text": "Skipping verification feels fast until 98% of tasks silently fail and debugging costs hours",
+      "status": "observed",
+      "evidence_refs": [],
+      "verification_state": "unchecked",
+      "notes": "heycckz example"
+    }
+  ],
+  "evidence_refs": [],
+  "inquiry_ids": [
+    "B001"
+  ],
+  "security_flags": [],
+  "relevance_score": 2,
+  "evaluation": {
+    "relevance": 2,
+    "novelty": 2,
+    "evidence": 1,
+    "falsifiability": 2,
+    "actionability": 3,
+    "notes": "Four-cost framework directly informs receipt design: minimize latency, reduce cognitive overhead for verifier."
+  },
+  "observed_at": "2026-07-26T17:25:16Z"
+}
