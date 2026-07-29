@@ -93,7 +93,7 @@ jobs:
             --ctx-output /tmp/ctx_artifact.json
 
       - uses: actions/upload-artifact@v4
-        if: steps.config.outputs.enabled == 'true'
+        if: always() && steps.config.outputs.enabled == 'true'
         with:
           name: hq-report-observe-${{ github.run_id }}
           path: |
