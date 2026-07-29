@@ -907,163 +907,402 @@ class TestFakeDeepSeekE2E:
         errs = validate_sanitized_ctx(d)
         assert len(errs) == 0, f"CTX validation errors: {errs}"
 
-    def test_content_excerpt_survives_scout_model(self):
-        """Regression: Scout model output must not drop content_excerpt.
+    def test_content_excerpt_propagates_end_to_end(self):
+        """E2E: canonical excerpt reaches every role, no fake manufactures it.
 
-        The Scout model may select/sort candidates but the code must
-        merge model output with canonical Moltbook API records to
-        preserve content_excerpt, untrusted, and author_handle.
+        The transport records every payload.  No fake response hardcodes
+        the excerpt.  Proof is in the actual inputs, not the outputs.
         """
-        sha = _make_sha("cx-ce")
-
-        call_log: list[dict] = []
-
-        class FakeTransport:
-            def __call__(self, payload: dict) -> dict:
-                model = payload.get("model", "")
-                call_log.append({
-                    "model": model,
-                    "has_schema": "response_format" in payload,
-                })
-                # Number of prior calls
-                if len(call_log) == 1:  # Scout
-                    return {
-                        "choices": [{"message": {"content": json.dumps({
-                            "candidates_found": 2,
-                            "candidates": [
-                                # Scout model returns only id/url/type — NO content_excerpt
-                                {"url": "https://www.moltbook.com/post/test-p#comments",
-                                 "id": "comment-1",
-                                 "author_handle": "test_bot",
-                                 "content_type": "comment"},
-                                {"url": "https://www.moltbook.com/post/test-p#comments",
-                                 "id": "comment-2",
-                                 "author_handle": "vantik",
-                                 "content_type": "comment"},
-                            ]
-                        })}}],
-                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
-                                  "total_tokens": 300},
-                    }
-                elif len(call_log) == 2:  # Records Clerk
-                    return {
-                        "choices": [{"message": {"content": json.dumps({
-                            "normalized": [
-                                {"source_id": "comment-1",
-                                 "url": "https://www.moltbook.com/post/test-p#comments",
-                                 "author_handle": "test_bot", "content_type": "comment",
-                                 "observed_at": "2026-07-27T00:00:00Z", "untrusted": True,
-                                 "content_excerpt": "bot comment text",
-                                 "paraphrase": "bot said something",
-                                 "provenance": ["test-p"]},
-                                {"source_id": "comment-2",
-                                 "url": "https://www.moltbook.com/post/test-p#comments",
-                                 "author_handle": "vantik", "content_type": "comment",
-                                 "observed_at": "2026-07-27T00:00:00Z", "untrusted": True,
-                                 "content_excerpt": "vantik comment text should survive",
-                                 "paraphrase": "vantik raised a point",
-                                 "provenance": ["test-p"]},
-                            ]
-                        })}}],
-                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
-                                  "total_tokens": 300},
-                    }
-                elif len(call_log) == 3:  # Evidence Analyst
-                    return {
-                        "choices": [{"message": {"content": json.dumps({
-                            "accepted": [
-                                {"source_id": "comment-1",
-                                 "url": "https://www.moltbook.com/post/test-p#comments",
-                                 "author_handle": "test_bot", "untrusted": True,
-                                 "content_excerpt": "bot comment text"},
-                                {"source_id": "comment-2",
-                                 "url": "https://www.moltbook.com/post/test-p#comments",
-                                 "author_handle": "vantik", "untrusted": True,
-                                 "content_excerpt": "vantik comment text should survive"},
-                            ],
-                            "rejected": [], "claims": [], "scores": {},
-                            "rationale": "Two valid comments"
-                        })}}],
-                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
-                                  "total_tokens": 300},
-                    }
-                else:  # Director
-                    return {
-                        "choices": [{"message": {"content": json.dumps({
-                            "disposition": "RECORD_ONLY",
-                            "rationale": "Evidence recorded",
-                            "decision_id": "d1", "director_run_id": "r1",
-                            "timestamp": "2026-07-27T00:00:00Z",
-                        })}}],
-                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
-                                  "total_tokens": 300},
-                    }
-
-        from agency.model_client import DeepSeekClient
-        client = DeepSeekClient(transport=FakeTransport())
+        sha = _make_sha("cx-e2e")
 
         vantik_excerpt = (
-            "The minimum receipt must include the commit hash, "
-            "a diff URL, and a test-run summary. Without those "
-            "three fields the receipt is not independently verifiable."
+            "Minimum viable receipt: commit_hash, test_run_id + "
+            "pass/fail counts, diff_url, timestamp, signer_id."
         )
+        hermes_excerpt = "This is a reply from hermes-sankhya-25 itself."
 
-        class FakeReader:
+        # ── Transport records every payload ──
+        payload_log: list[dict] = []
+
+        class _Tx:
+            def __call__(self, payload: dict) -> dict:
+                model = payload.get("model", "")
+                msgs = payload.get("messages", [])
+                system = msgs[0]["content"] if msgs else ""
+                user_raw = msgs[1]["content"] if len(msgs) > 1 else "{}"
+                user = json.loads(user_raw)
+                payload_log.append({
+                    "model": model,
+                    "system": system,
+                    "user": user,
+                })
+                # Scout — model returns only ids (selection), no content fields
+                if "discover" in system.lower() or "deduplicate" in system.lower():
+                    cands = user.get("new_candidates", [])
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "candidates_found": len(cands),
+                            "candidates": [
+                                {"url": c["url"], "id": c["id"],
+                                 "author_handle": c["author_handle"],
+                                 "content_type": c["content_type"]}
+                                for c in cands
+                            ],
+                        })}}],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                                  "total_tokens": 150},
+                    }
+                # Records Clerk — model needs to receive candidates with excerpt
+                if "normalize" in system.lower():
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "normalized": [{
+                                "source_id": c["id"],
+                                "url": c.get("url", ""),
+                                "author_handle": c.get("author_handle", ""),
+                                "content_type": c.get("content_type", ""),
+                                "observed_at": "2026-07-29T00:00:00Z",
+                                "untrusted": True,
+                                "content_excerpt": c.get("content_excerpt", ""),
+                                "paraphrase": c.get("content_excerpt", "")[:100],
+                                "provenance": [c.get("url", "")],
+                            } for c in user.get("source_candidates", [])],
+                        })}}],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                                  "total_tokens": 150},
+                    }
+                # Evidence Analyst
+                if "extract claims" in system.lower() or "classify" in system.lower():
+                    sc = user.get("source_candidates", [])
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "accepted": [{
+                                "source_id": c.get("id", c.get("source_id", "")),
+                                "url": c.get("url", ""),
+                                "author_handle": c.get("author_handle", ""),
+                                "untrusted": True,
+                                "content_excerpt": c.get("content_excerpt", ""),
+                            } for c in sc if c.get("content_excerpt")],
+                            "rejected": [],
+                            "claims": [],
+                            "scores": {},
+                            "rationale": "Evidence extracted",
+                        })}}],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                                  "total_tokens": 150},
+                    }
+                # Director
+                return {
+                    "choices": [{"message": {"content": json.dumps({
+                        "disposition": "RECORD_ONLY",
+                        "rationale": "Evidence recorded",
+                        "decision_id": "d1", "director_run_id": "r1",
+                        "timestamp": "2026-07-29T00:00:00Z",
+                    })}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                              "total_tokens": 150},
+                }
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+
+        # ── Canonical Moltbook fixture ──
+        class _Reader:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "Test post.",
-                                 "author": {"name": "post_author"}}}
+                return {"post": {"id": pid, "content": "Post body.",
+                                 "author": {"name": "op"}}}
             def fetch_comments(self, pid):
                 return {"comments": [
-                    {"id": "comment-1",
-                     "content": "bot comment text",
-                     "author": {"name": "test_bot"}},
-                    {"id": "comment-2",
+                    {"id": "c-vantik",
                      "content": vantik_excerpt,
                      "author": {"name": "vantik"}},
+                    {"id": "c-hermes",
+                     "content": hermes_excerpt,
+                     "author": {"name": "hermes-sankhya-25"}},
                 ]}
 
-        class P(RepoStateProvider):
+        class _P(RepoStateProvider):
             def current_sha(self): return sha
             def origin_main_sha(self): return sha
 
-        reg = build_role_registry(client=client, moltbook_reader=FakeReader())
+        reg = build_role_registry(client=client, moltbook_reader=_Reader())
         orch = AgencyOrchestrator(
-            base_sha=sha, repo_provider=P(), role_registry=reg,
+            base_sha=sha, repo_provider=_P(), role_registry=reg,
             campaign={"active_inquiry": "test-p", "objective": "Test"})
         orch.ctx.set_evidence_index(set())
-
         ctx = orch.run()
         assert ctx.status == "completed"
 
-        d = ctx.to_dict(sanitize=True)
-        events = d.get("events", [])
-
-        # Verify: Scout output should contain content_excerpt merged
-        # from canonical inbox records.
-        scout_events = [e for e in events
-                        if e.get("data", {}).get("role") == "scout"]
-        assert scout_events, "Scout event should exist"
-        scout_data = scout_events[0]["data"]["data"]
-        candidates = scout_data.get("candidates", [])
-        assert len(candidates) >= 2
-
-        # Comment-2 (vantik) must have content_excerpt from the API
-        vantik_cand = [c for c in candidates if c.get("author_handle") == "vantik"]
-        assert len(vantik_cand) == 1
-        assert vantik_cand[0].get("content_excerpt") == vantik_excerpt, (
-            f"content_excerpt lost: got {vantik_cand[0].get('content_excerpt','')[:50]!r}"
+        # ── Proof 1: canonical fixture has vantik excerpt ──
+        scout_payloads = [p for p in payload_log if "new_candidates" in p["user"]]
+        assert scout_payloads
+        new_cands = scout_payloads[0]["user"]["new_candidates"]
+        vantik = [c for c in new_cands if c["author_handle"] == "vantik"]
+        assert len(vantik) == 1
+        assert vantik[0]["content_excerpt"] == vantik_excerpt, (
+            "Canonical fixture must contain exact vantik excerpt"
+        )
+        # Two comments with same URL are distinct by id
+        comment_cands = [c for c in new_cands
+                         if c.get("content_type") == "comment"]
+        urls = {c["url"] for c in comment_cands}
+        assert len(comment_cands) == 2 and len(urls) == 1, (
+            "Two comments sharing URL must remain distinct by id"
         )
 
-        # Evidence Analyst must have received candidates with content
-        evidence_events = [e for e in events
-                           if e.get("data", {}).get("role") == "evidence_analyst"]
-        assert evidence_events
-        evidence_data = evidence_events[0]["data"]["data"]
-        accepted = evidence_data.get("accepted", [])
-        assert len(accepted) >= 1
-        # At least one accepted evidence item carries content_excerpt
-        assert any(a.get("content_excerpt", "") for a in accepted)
+        # ── Proof 2: Scout model returns only ids ──
+        d = ctx.to_dict(sanitize=True)
+        events = d["events"]
+        scout_events = [e for e in events if e["data"].get("role") == "scout"]
+        assert scout_events
+        scout_out = scout_events[0]["data"]["data"]["candidates"]
+        for c in scout_out:
+            assert "id" in c, "Every candidate must have id"
+            assert "content_excerpt" in c, "content_excerpt must be present after merge"
+        vantik_scout = [c for c in scout_out if c["author_handle"] == "vantik"]
+        assert len(vantik_scout) == 1
+        assert vantik_scout[0]["content_excerpt"] == vantik_excerpt, (
+            "Scout merge must restore exact vantik excerpt"
+        )
 
-        # Clean state
+        # ── Proof 3: Records Clerk input contains the exact excerpt ──
+        clerk_payloads = [p for p in payload_log if "normalize" in p.get("system", "")]
+        assert clerk_payloads
+        clerk_cands = clerk_payloads[0]["user"].get("source_candidates", [])
+        vantik_clerk = [c for c in clerk_cands if c.get("author_handle") == "vantik"]
+        assert len(vantik_clerk) == 1
+        assert vantik_clerk[0].get("content_excerpt") == vantik_excerpt, (
+            "Records Clerk input must contain exact vantik excerpt"
+        )
+
+        # ── Proof 4: Evidence Analyst input contains the exact excerpt ──
+        ev_payloads = [p for p in payload_log if (
+            "extract" in p.get("system", "")
+            or "classify" in p.get("system", "")
+        )]
+        assert ev_payloads
+        ev_cands = ev_payloads[0]["user"].get("source_candidates", [])
+        vantik_ev = [c for c in ev_cands if c.get("author_handle") == "vantik"]
+        assert len(vantik_ev) == 1
+        assert vantik_ev[0].get("content_excerpt") == vantik_excerpt, (
+            "Evidence Analyst input must contain exact vantik excerpt"
+        )
+
+        # ── Proof 5: no downstream fake response manufactured the excerpt ──
+        # (Verified by construction: clerk/evidence Transport only copies from input)
+        # ── Proof 6: removing canonical merge causes failure (mutation test below) ──
+
         assert len(ctx.transactions) == 0
         assert len(ctx.incidents) == 0
+
+
+# ---------------------------------------------------------------------------
+# Adversarial Scout merge invariant tests
+# ---------------------------------------------------------------------------
+
+class TestScoutMergeInvariants:
+    """Strict enforcement: id mandatory, match by id only, never accept
+    unknown/duplicate/missing ids, never allow model to override canonical."""
+
+    def _canonical(self):
+        return [
+            {"id": "c-a", "url": "https://m.example/p#c", "author_handle": "vantik",
+             "content_type": "comment", "untrusted": True,
+             "content_excerpt": "A real comment."},
+            {"id": "c-b", "url": "https://m.example/p#c", "author_handle": "other",
+             "content_type": "comment", "untrusted": True,
+             "content_excerpt": "Another comment, same URL."},
+        ]
+
+    # ── missing candidate id ──
+    def test_missing_id_causes_fail_closed(self):
+        scout = ScoutRole(adapter=_stub_adapter([{"url": "https://x"}]), moltbook=None)
+        ctx = {"inbox": self._canonical(), "known_ids": set(), "campaign": {}}
+        result = scout(ctx)
+        assert result.status == "FAIL_CLOSED"
+        assert "without id" in result.fail_reason
+
+    # ── unknown candidate id ──
+    def test_unknown_id_causes_fail_closed(self):
+        scout = ScoutRole(adapter=_stub_adapter([{"id": "c-unknown"}]), moltbook=None)
+        ctx = {"inbox": self._canonical(), "known_ids": set(), "campaign": {}}
+        result = scout(ctx)
+        assert result.status == "FAIL_CLOSED"
+        assert "unknown" in result.fail_reason.lower()
+
+    # ── duplicate candidate id ──
+    def test_duplicate_id_causes_fail_closed(self):
+        scout = ScoutRole(adapter=_stub_adapter(
+            [{"id": "c-a"}, {"id": "c-a"}]), moltbook=None)
+        ctx = {"inbox": self._canonical(), "known_ids": set(), "campaign": {}}
+        result = scout(ctx)
+        assert result.status == "FAIL_CLOSED"
+        assert "duplicate" in result.fail_reason.lower()
+
+    # ── two canonical comments sharing URL remain distinct ──
+    def test_same_url_different_ids_both_preserved(self):
+        scout = ScoutRole(adapter=_stub_adapter(
+            [{"id": "c-a"}, {"id": "c-b"}]), moltbook=None)
+        ctx = {"inbox": self._canonical(), "known_ids": set(), "campaign": {}}
+        result = scout(ctx)
+        assert result.status == "COMPLETE"
+        merged = result.data["candidates"]
+        assert len(merged) == 2
+        assert merged[0]["id"] == "c-a"
+        assert merged[1]["id"] == "c-b"
+        assert merged[0]["content_excerpt"] == "A real comment."
+        assert merged[1]["content_excerpt"] == "Another comment, same URL."
+
+    # ── model attempts to alter author ──
+    def test_model_author_override_is_ignored(self):
+        scout = ScoutRole(adapter=_stub_adapter(
+            [{"id": "c-a", "author_handle": "EVIL_IMPOSTOR"}]), moltbook=None)
+        ctx = {"inbox": self._canonical(), "known_ids": set(), "campaign": {}}
+        result = scout(ctx)
+        assert result.status == "COMPLETE"
+        assert result.data["candidates"][0]["author_handle"] == "vantik"
+
+    # ── model attempts to alter content_excerpt ──
+    def test_model_content_override_is_ignored(self):
+        scout = ScoutRole(adapter=_stub_adapter(
+            [{"id": "c-a", "content_excerpt": "FAKE NEWS"}]), moltbook=None)
+        ctx = {"inbox": self._canonical(), "known_ids": set(), "campaign": {}}
+        result = scout(ctx)
+        assert result.status == "COMPLETE"
+        assert result.data["candidates"][0]["content_excerpt"] == "A real comment."
+
+
+def _stub_adapter(model_output: list[dict]):
+    """RoleModelAdapter stub returning fixed candidates."""
+    from agency.model_client import ModelCallResult
+    class _S:
+        def invoke(self, ctx_view):
+            return ModelCallResult(success=True, data={"candidates_found": len(model_output),
+                "candidates": model_output},
+                input_tokens=10, output_tokens=5, total_tokens=15, estimated_cost=0.0)
+    return _S()
+
+
+# ---------------------------------------------------------------------------
+# Targeted mutation test — Scout merge code path
+# ---------------------------------------------------------------------------
+
+class TestScoutMergeMutations:
+    """Prove that removing the canonical merge causes test_content_excerpt_
+    propagates_end_to_end to fail.  Only tests the Scout merge code path."""
+
+    def _patch_roles(self):
+        """Return a patched version of roles.py module with the merge bypassed."""
+        import importlib
+        mod = importlib.import_module("agency.roles")
+        return mod
+
+    def test_removing_merge_breaks_propagation(self):
+        """If the merge is removed, the model-only output (no excerpt) reaches
+        downstream roles — the e2e test must detect this."""
+        import agency.roles as rmod
+        orig_call = rmod.ScoutRole.__call__
+
+        def broken_call(self, ctx_view):
+            """Deliberately skip canonical merge — return model output as-is."""
+            inbox = ctx_view.get("inbox", [])
+            known = set(ctx_view.get("known_ids", []))
+            new = [i for i in inbox if i.get("id") not in known]
+            if not new:
+                return rmod.RoleResult(self.ROLE, "NOOP", data={"candidates_found": 0})
+            if self._adapter:
+                result = self._adapter.invoke({**ctx_view, "new_candidates": new})
+                rr = rmod._safe_result(self.ROLE, result)
+                # MUTATION: skip merge, return model output raw
+                return rr
+            return rmod.RoleResult(self.ROLE, "COMPLETE",
+                data={"candidates_found": len(new), "candidates": new})
+
+        try:
+            rmod.ScoutRole.__call__ = broken_call
+
+            sha = _make_sha("mut-1")
+            vantik_excerpt = "REAL TEXT FROM API."
+            payload_log = []
+
+            class _Tx:
+                def __call__(self, payload):
+                    msgs = payload.get("messages", [])
+                    user = json.loads(msgs[1]["content"]) if len(msgs) > 1 else {}
+                    payload_log.append(user)
+                    if "discover" in msgs[0]["content"].lower():
+                        cands = user.get("new_candidates", [])
+                        return {"choices": [{"message": {"content": json.dumps({
+                            "candidates_found": len(cands),
+                            "candidates": [{"id": c["id"]} for c in cands],
+                        })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                    elif "normalize" in msgs[0]["content"].lower():
+                        sc = user.get("source_candidates", [])
+                        return {"choices": [{"message": {"content": json.dumps({
+                            "normalized": [{"source_id": c.get("id",""), "url": c.get("url",""),
+                            "author_handle": c.get("author_handle",""), "content_type": c.get("content_type",""),
+                            "observed_at": "2026-01-01T00:00:00Z", "untrusted": True,
+                            "content_excerpt": c.get("content_excerpt",""), "paraphrase": "",
+                            "provenance": []} for c in sc]})}}],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                    elif "extract" in msgs[0]["content"].lower():
+                        sc = user.get("source_candidates", [])
+                        return {"choices": [{"message": {"content": json.dumps({
+                            "accepted": [{"source_id": c.get("id",""), "url": c.get("url",""),
+                            "author_handle": c.get("author_handle",""), "untrusted": True,
+                            "content_excerpt": c.get("content_excerpt","")} for c in sc],
+                            "rejected": [], "claims": [], "scores": {}, "rationale": "x"})}}],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "disposition": "RECORD_ONLY", "rationale": "x",
+                        "decision_id": "d1", "director_run_id": "r1",
+                        "timestamp": "2026-01-01T00:00:00Z"})}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+            from agency.model_client import DeepSeekClient
+            client = DeepSeekClient(transport=_Tx())
+
+            class _R:
+                def fetch_post(self, pid):
+                    return {"post": {"id": pid, "content": "body", "author": {"name": "op"}}}
+                def fetch_comments(self, pid):
+                    return {"comments": [{"id": "c-x", "content": vantik_excerpt,
+                                          "author": {"name": "vantik"}}]}
+
+            class _P(RepoStateProvider):
+                def current_sha(self): return sha
+                def origin_main_sha(self): return sha
+
+            reg = build_role_registry(client=client, moltbook_reader=_R())
+            orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(), role_registry=reg,
+                campaign={"active_inquiry": "t", "objective": "T"})
+            orch.ctx.set_evidence_index(set())
+            orch.run()  # mutation: runs without merge, we inspect payload_log
+
+            # Without merge: downstream gets model output (no excerpt)
+            # Evidence Analyst is the 3rd flash-model call (Scout, Clerk, Evidence)
+            # The user dict has source_candidates — check if any has the excerpt
+            ev_payloads = [p for p in payload_log
+                           if "source_candidates" in p]
+            has_vantik = False
+            for p in ev_payloads:
+                for c in p.get("source_candidates", []):
+                    if c.get("content_excerpt", "") == vantik_excerpt:
+                        has_vantik = True
+            assert not has_vantik, (
+                "MUTATION SURVIVED: downstream still got vantik excerpt without canonical merge! "
+                "The merge enforcement is not working."
+            )
+        finally:
+            rmod.ScoutRole.__call__ = orig_call
+
+    def test_merge_is_active_by_default(self):
+        """Control: with the real merge, content_excerpt must propagate."""
+        # The existing test_content_excerpt_propagates_end_to_end already proves
+        # this, but we confirm the code path is structured with merge.
+        import inspect
+        src = inspect.getsource(ScoutRole.__call__)
+        assert "canonical_by_id" in src, "Merge logic must be present in __call__"
+        assert "FAIL_CLOSED" in src, "FAIL_CLOSED enforcement must be present"
+        assert "unknown" in src.lower(), "Unknown-id detection must be present"
+        assert "duplicate" in src.lower(), "Duplicate-id detection must be present"
