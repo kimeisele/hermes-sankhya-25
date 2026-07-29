@@ -23,8 +23,8 @@ flash = "deepseek-v4-flash"
 pro = "deepseek-v4-pro"
 
 [roles]
-scout = "flash"
-records_clerk = "flash"
+scout = "deterministic"
+records_clerk = "deterministic"
 evidence_analyst = "flash"
 agency_director = "pro"
 engagement_lead = "pro"

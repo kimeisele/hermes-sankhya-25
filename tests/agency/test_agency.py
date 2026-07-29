@@ -906,3 +906,89 @@ class TestFakeDeepSeekE2E:
         from agency.validate_ctx import validate_sanitized_ctx
         errs = validate_sanitized_ctx(d)
         assert len(errs) == 0, f"CTX validation errors: {errs}"
+
+
+# ---------------------------------------------------------------------------
+# Proof: Scout and Records Clerk are deterministic
+# ---------------------------------------------------------------------------
+
+class TestDeterministicIngestion:
+    """Scout and Records Clerk must run without LLM transport.
+    Evidence Analyst remains model-backed."""
+
+    def test_scout_and_clerk_never_invoke_model(self):
+        """Deterministic roles must not call the model."""
+        sentinel = "UNIQUE-SENTINEL-abc123xyz-verification-receipt"
+        model_calls: list[str] = []
+
+        class _Tx:
+            def __call__(self, payload):
+                model_calls.append(payload.get("model", ""))
+                # Evidence Analyst response
+                return {
+                    "choices": [{"message": {"content": json.dumps({
+                        "accepted": [], "rejected": [], "claims": [],
+                        "scores": {}, "rationale": "test",
+                    })}}],
+                    "usage": {"prompt_tokens": 50, "completion_tokens": 30,
+                              "total_tokens": 80},
+                }
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+
+        class _Reader:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "Post body.",
+                                 "author": {"name": "op"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [
+                    {"id": "c-1", "content": sentinel,
+                     "author": {"name": "vantik"}},
+                ]}
+
+        reg = build_role_registry(client=client, moltbook_reader=_Reader())
+
+        # ── Scout (deterministic) ──
+        scout = reg["scout"]
+        assert scout._adapter is None, "Scout must have no model adapter"
+        scout_ctx = {
+            "inbox": [], "known_ids": set(), "campaign": {
+                "active_inquiry": "test-p"}}
+        calls_before = len(model_calls)
+        result = scout(scout_ctx)
+        assert result.status == "COMPLETE"
+        assert len(model_calls) == calls_before, (
+            f"Scout called model {len(model_calls) - calls_before} time(s)")
+        candidates = result.data["candidates"]
+        vantik = [c for c in candidates if c.get("author_handle") == "vantik"]
+        assert len(vantik) == 1
+        assert vantik[0]["content_excerpt"] == sentinel, (
+            f"Scout must preserve sentinel, got: "
+            f"{vantik[0].get('content_excerpt', '')[:60]!r}")
+
+        # ── Records Clerk (deterministic) ──
+        clerk = reg["records_clerk"]
+        assert clerk._adapter is None, "Records Clerk must have no model adapter"
+        clerk_ctx = {"source_candidates": [vantik[0]]}
+        calls_before2 = len(model_calls)
+        result2 = clerk(clerk_ctx)
+        assert result2.status == "COMPLETE"
+        assert len(model_calls) == calls_before2, (
+            f"Clerk called model {len(model_calls) - calls_before2} time(s)")
+        norm = result2.data["normalized"]
+        assert len(norm) == 1
+        assert norm[0]["content_excerpt"] == sentinel, (
+            f"Clerk must preserve sentinel, got: "
+            f"{norm[0].get('content_excerpt', '')[:60]!r}")
+
+        # ── Evidence Analyst (model-backed) ──
+        evidence = reg["evidence_analyst"]
+        assert evidence._adapter is not None, (
+            "Evidence Analyst must have a model adapter")
+        evidence_ctx = {"source_candidates": norm}
+        calls_before3 = len(model_calls)
+        result3 = evidence(evidence_ctx)
+        assert result3.status == "COMPLETE"
+        assert len(model_calls) > calls_before3, (
+            f"Evidence Analyst must call model, got {len(model_calls) - calls_before3} calls")
