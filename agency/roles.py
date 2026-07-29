@@ -173,7 +173,40 @@ class ScoutRole:
 
         if self._adapter:
             result = self._adapter.invoke({**ctx_view, "new_candidates": new})
-            return _safe_result(self.ROLE, result)
+            role_result = _safe_result(self.ROLE, result)
+            # The model may select, sort, or score candidates but must NOT
+            # replace the canonical source envelope.  Match every model
+            # candidate back to its canonical inbox record by id/url to
+            # preserve content_excerpt, untrusted, and author_handle.
+            canonical_by_key: dict[str, dict[str, Any]] = {}
+            for c in new:
+                cid = c.get("id") or c.get("url", "")
+                if cid:
+                    canonical_by_key[cid] = c
+            if role_result.status == "COMPLETE" and "candidates" in role_result.data:
+                merged = []
+                seen = set()
+                for mc in role_result.data["candidates"]:
+                    key = mc.get("id") or mc.get("url", "")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    orig = canonical_by_key.get(key)
+                    if orig:
+                        # Restore every canonical field from the API record
+                        merged.append({
+                            "id": orig.get("id", mc.get("id", "")),
+                            "url": orig.get("url", mc.get("url", "")),
+                            "author_handle": orig.get("author_handle", mc.get("author_handle", "")),
+                            "content_type": orig.get("content_type", mc.get("content_type", "")),
+                            "untrusted": orig.get("untrusted", True),
+                            "content_excerpt": orig.get("content_excerpt", ""),
+                        })
+                    else:
+                        merged.append(mc)
+                role_result.data["candidates"] = merged
+                role_result.data["candidates_found"] = len(merged)
+            return role_result
 
         return RoleResult(self.ROLE, "COMPLETE",
                           data={"candidates_found": len(new), "candidates": new},

@@ -906,3 +906,164 @@ class TestFakeDeepSeekE2E:
         from agency.validate_ctx import validate_sanitized_ctx
         errs = validate_sanitized_ctx(d)
         assert len(errs) == 0, f"CTX validation errors: {errs}"
+
+    def test_content_excerpt_survives_scout_model(self):
+        """Regression: Scout model output must not drop content_excerpt.
+
+        The Scout model may select/sort candidates but the code must
+        merge model output with canonical Moltbook API records to
+        preserve content_excerpt, untrusted, and author_handle.
+        """
+        sha = _make_sha("cx-ce")
+
+        call_log: list[dict] = []
+
+        class FakeTransport:
+            def __call__(self, payload: dict) -> dict:
+                model = payload.get("model", "")
+                call_log.append({
+                    "model": model,
+                    "has_schema": "response_format" in payload,
+                })
+                # Number of prior calls
+                if len(call_log) == 1:  # Scout
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "candidates_found": 2,
+                            "candidates": [
+                                # Scout model returns only id/url/type — NO content_excerpt
+                                {"url": "https://www.moltbook.com/post/test-p#comments",
+                                 "id": "comment-1",
+                                 "author_handle": "test_bot",
+                                 "content_type": "comment"},
+                                {"url": "https://www.moltbook.com/post/test-p#comments",
+                                 "id": "comment-2",
+                                 "author_handle": "vantik",
+                                 "content_type": "comment"},
+                            ]
+                        })}}],
+                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
+                                  "total_tokens": 300},
+                    }
+                elif len(call_log) == 2:  # Records Clerk
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "normalized": [
+                                {"source_id": "comment-1",
+                                 "url": "https://www.moltbook.com/post/test-p#comments",
+                                 "author_handle": "test_bot", "content_type": "comment",
+                                 "observed_at": "2026-07-27T00:00:00Z", "untrusted": True,
+                                 "content_excerpt": "bot comment text",
+                                 "paraphrase": "bot said something",
+                                 "provenance": ["test-p"]},
+                                {"source_id": "comment-2",
+                                 "url": "https://www.moltbook.com/post/test-p#comments",
+                                 "author_handle": "vantik", "content_type": "comment",
+                                 "observed_at": "2026-07-27T00:00:00Z", "untrusted": True,
+                                 "content_excerpt": "vantik comment text should survive",
+                                 "paraphrase": "vantik raised a point",
+                                 "provenance": ["test-p"]},
+                            ]
+                        })}}],
+                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
+                                  "total_tokens": 300},
+                    }
+                elif len(call_log) == 3:  # Evidence Analyst
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "accepted": [
+                                {"source_id": "comment-1",
+                                 "url": "https://www.moltbook.com/post/test-p#comments",
+                                 "author_handle": "test_bot", "untrusted": True,
+                                 "content_excerpt": "bot comment text"},
+                                {"source_id": "comment-2",
+                                 "url": "https://www.moltbook.com/post/test-p#comments",
+                                 "author_handle": "vantik", "untrusted": True,
+                                 "content_excerpt": "vantik comment text should survive"},
+                            ],
+                            "rejected": [], "claims": [], "scores": {},
+                            "rationale": "Two valid comments"
+                        })}}],
+                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
+                                  "total_tokens": 300},
+                    }
+                else:  # Director
+                    return {
+                        "choices": [{"message": {"content": json.dumps({
+                            "disposition": "RECORD_ONLY",
+                            "rationale": "Evidence recorded",
+                            "decision_id": "d1", "director_run_id": "r1",
+                            "timestamp": "2026-07-27T00:00:00Z",
+                        })}}],
+                        "usage": {"prompt_tokens": 200, "completion_tokens": 100,
+                                  "total_tokens": 300},
+                    }
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=FakeTransport())
+
+        vantik_excerpt = (
+            "The minimum receipt must include the commit hash, "
+            "a diff URL, and a test-run summary. Without those "
+            "three fields the receipt is not independently verifiable."
+        )
+
+        class FakeReader:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "Test post.",
+                                 "author": {"name": "post_author"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [
+                    {"id": "comment-1",
+                     "content": "bot comment text",
+                     "author": {"name": "test_bot"}},
+                    {"id": "comment-2",
+                     "content": vantik_excerpt,
+                     "author": {"name": "vantik"}},
+                ]}
+
+        class P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        reg = build_role_registry(client=client, moltbook_reader=FakeReader())
+        orch = AgencyOrchestrator(
+            base_sha=sha, repo_provider=P(), role_registry=reg,
+            campaign={"active_inquiry": "test-p", "objective": "Test"})
+        orch.ctx.set_evidence_index(set())
+
+        ctx = orch.run()
+        assert ctx.status == "completed"
+
+        d = ctx.to_dict(sanitize=True)
+        events = d.get("events", [])
+
+        # Verify: Scout output should contain content_excerpt merged
+        # from canonical inbox records.
+        scout_events = [e for e in events
+                        if e.get("data", {}).get("role") == "scout"]
+        assert scout_events, "Scout event should exist"
+        scout_data = scout_events[0]["data"]["data"]
+        candidates = scout_data.get("candidates", [])
+        assert len(candidates) >= 2
+
+        # Comment-2 (vantik) must have content_excerpt from the API
+        vantik_cand = [c for c in candidates if c.get("author_handle") == "vantik"]
+        assert len(vantik_cand) == 1
+        assert vantik_cand[0].get("content_excerpt") == vantik_excerpt, (
+            f"content_excerpt lost: got {vantik_cand[0].get('content_excerpt','')[:50]!r}"
+        )
+
+        # Evidence Analyst must have received candidates with content
+        evidence_events = [e for e in events
+                           if e.get("data", {}).get("role") == "evidence_analyst"]
+        assert evidence_events
+        evidence_data = evidence_events[0]["data"]["data"]
+        accepted = evidence_data.get("accepted", [])
+        assert len(accepted) >= 1
+        # At least one accepted evidence item carries content_excerpt
+        assert any(a.get("content_excerpt", "") for a in accepted)
+
+        # Clean state
+        assert len(ctx.transactions) == 0
+        assert len(ctx.incidents) == 0

@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SHIFT: "${{ inputs.shift || 'morning' }}"
+      SHIFT: "${{ github.event.schedule == '47 19 * * *' && 'evening' || inputs.shift || 'morning' }}"
       GH_RUN_ID: "${{ github.run_id }}"
     steps:
       - uses: actions/checkout@v4

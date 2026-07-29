@@ -14,7 +14,9 @@
           "url": {"type": "string"},
           "id": {"type": "string"},
           "author_handle": {"type": "string"},
-          "content_type": {"type": "string"}
+          "content_type": {"type": "string"},
+          "content_excerpt": {"type": "string", "maxLength": 500},
+          "untrusted": {"type": "boolean"}
         }
       }
     }
