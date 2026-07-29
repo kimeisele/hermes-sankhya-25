@@ -46,6 +46,43 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
                              f"{d.get('rationale', '')[:80]}")
         lines.append("")
 
+    # Research Synthesis (from Director when READY_FOR_SYNTHESIS)
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+        synthesis = d.get("synthesis")
+        if not synthesis:
+            continue
+        lines.append("## Research Synthesis")
+        lines.append("")
+        lines.append(f"**Inquiry:** {synthesis.get('inquiry', 'N/A')}")
+        lines.append("")
+        lines.append(f"**Executive Answer:** {synthesis.get('executive_answer', 'N/A')}")
+        lines.append("")
+        findings = synthesis.get("findings", [])
+        if findings:
+            lines.append(f"### Findings ({len(findings)})")
+            lines.append("")
+            for f in findings:
+                if isinstance(f, dict):
+                    lines.append(f"- **{f.get('finding_id', '?')}** — "
+                                 f"{f.get('statement', '')[:120]}")
+                    srcs = f.get("source_ids", [])
+                    lines.append(f"  - Sources: {', '.join(srcs[:5])}")
+                    lines.append(f"  - Confidence: {f.get('confidence', '?')}")
+                    lines.append(f"  - Reasoning: {f.get('reasoning', '')[:200]}")
+                    lines.append("")
+        questions = synthesis.get("unresolved_questions", [])
+        if questions:
+            lines.append("### Unresolved Questions")
+            for q in questions:
+                lines.append(f"- {q}")
+            lines.append("")
+        next_inq = synthesis.get("next_inquiry", "")
+        if next_inq:
+            lines.append(f"**Next Inquiry:** {next_inq}")
+            lines.append("")
+
     # Engagement proposals
     eng_props = ctx_dict.get("engagement_proposals", [])
     if eng_props:

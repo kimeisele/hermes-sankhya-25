@@ -24,7 +24,7 @@ DIRECTOR_ROUTES: dict[str, list[str]] = {
     "RECORD_ONLY": ["RECORD_OR_PROPOSE", "AUDIT", "CLOSE_BOOKS"],
     "PROPOSE_ENGAGEMENT": ["ENGAGEMENT_LEAD", "AUDIT", "CLOSE_BOOKS"],
     "PROPOSE_ENGINEERING_INTAKE": ["ENGINEERING_PLANNER", "AUDIT", "CLOSE_BOOKS"],
-    "READY_FOR_SYNTHESIS": ["RECORD_OR_PROPOSE", "AUDIT", "CLOSE_BOOKS"],
+    "READY_FOR_SYNTHESIS": ["AUDIT", "CLOSE_BOOKS"],
     "ESCALATE_TO_HUMAN": ["AUDIT", "CLOSE_BOOKS"],
 }
 
@@ -216,21 +216,37 @@ class AgencyOrchestrator:
             self.ctx.close("failed")
             return "NOOP"
 
-        disposition = result.data.get("disposition", "")
+        director_data = result.data
+        disposition = director_data.get("disposition", "")
         if not disposition or disposition not in DIRECTOR_ROUTES:
             self.ctx.record_incident(
                 f"Invalid Director disposition: '{disposition}'", severity="high")
             self.ctx.close("failed")
             return "NOOP"
 
+        # Validate synthesis provenance against accepted evidence
+        synthesis = director_data.get("synthesis")
+        if synthesis and disposition == "READY_FOR_SYNTHESIS":
+            accepted_ids: set[str] = set()
+            for ev in self.ctx.accepted_evidence:
+                sid = ev.get("source_id", "")
+                if sid:
+                    accepted_ids.add(sid)
+            for finding in synthesis.get("findings", []):
+                for src_id in finding.get("source_ids", []):
+                    if not src_id or src_id not in accepted_ids:
+                        self.ctx.record_incident(
+                            f"Synthesis finding {finding.get('finding_id', '?')} "
+                            f"references unknown source_id: {src_id}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
+
         self.ctx.append_event(DIRECTOR_DECISION, {
             "disposition": disposition,
-            "rationale": result.data.get("rationale", ""),
+            "rationale": director_data.get("rationale", ""),
         })
-        self.ctx.add_decision({
-            "disposition": disposition, "timestamp": result.timestamp,
-            "rationale": result.data.get("rationale", ""),
-        })
+        self.ctx.add_decision(director_data)
         return disposition
 
     # ------------------------------------------------------------------

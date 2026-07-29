@@ -992,3 +992,167 @@ class TestDeterministicIngestion:
         assert result3.status == "COMPLETE"
         assert len(model_calls) > calls_before3, (
             f"Evidence Analyst must call model, got {len(model_calls) - calls_before3} calls")
+
+
+# ---------------------------------------------------------------------------
+# Director synthesis — integration and adversarial tests
+# ---------------------------------------------------------------------------
+
+class TestDirectorSynthesis:
+    """Director produces structured synthesis when READY_FOR_SYNTHESIS."""
+
+    def test_synthesis_stored_and_rendered(self):
+        """Full pipeline: synthesis survives CTX and HQ Markdown."""
+        sha = _make_sha("syn-int")
+
+        call_log: list[dict] = []
+        accepted_src = "src-abc-123"
+
+        class _Tx:
+            def __call__(self, payload):
+                msgs = payload.get("messages", [])
+                sys = msgs[0]["content"] if msgs else ""
+                call_log.append({"model": payload.get("model", ""),
+                                 "system": sys[:60]})
+                # Evidence Analyst
+                if "extract claims" in sys.lower() or "classify" in sys.lower():
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "accepted": [{"source_id": accepted_src, "claim_id": "c1"}],
+                        "rejected": [], "claims": [],
+                        "scores": {}, "rationale": "ok",
+                    })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                                  "total_tokens": 15}}
+                # Director (pro model)
+                return {"choices": [{"message": {"content": json.dumps({
+                    "decision_id": "d1", "disposition": "READY_FOR_SYNTHESIS",
+                    "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
+                    "rationale": "Evidence sufficient for synthesis.",
+                    "synthesis": {
+                        "inquiry": "What is the answer?",
+                        "executive_answer": "The answer is 42.",
+                        "findings": [{
+                            "finding_id": "f1",
+                            "statement": "Answer found.",
+                            "source_ids": [accepted_src],
+                            "confidence": "supported",
+                            "reasoning": "Evidence confirms.",
+                        }],
+                        "unresolved_questions": ["How to verify?"],
+                        "next_inquiry": "Test next question.",
+                    },
+                })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                              "total_tokens": 15}}
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+
+        class _R:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [{"id": accepted_src, "content": "evidence",
+                         "author": {"name": "ext"}}]}
+
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        reg = build_role_registry(client=client, moltbook_reader=_R())
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(), role_registry=reg,
+            campaign={"active_inquiry": "t", "objective": "T"})
+        orch.ctx.set_evidence_index(set())
+        ctx = orch.run()
+
+        # Run completes
+        assert ctx.status == "completed"
+
+        # Full Director decision stored — includes synthesis
+        assert len(ctx.decisions) == 1
+        dec = ctx.decisions[0]
+        assert dec["disposition"] == "READY_FOR_SYNTHESIS"
+        assert "synthesis" in dec
+        syn = dec["synthesis"]
+        assert syn["inquiry"] == "What is the answer?"
+        assert syn["executive_answer"] == "The answer is 42."
+        assert len(syn["findings"]) == 1
+        assert syn["findings"][0]["source_ids"] == [accepted_src]
+
+        # HQ Markdown contains synthesis section
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert "## Research Synthesis" in report
+        assert "The answer is 42." in report
+        assert accepted_src[:12] in report
+
+        # No extra model calls — Evidence Analyst + Director only
+        models = [c["model"] for c in call_log]
+        flash_models = [m for m in models if "pro" not in m.lower()]
+        pro_models = [m for m in models if "pro" in m.lower()]
+        assert len(flash_models) == 1, f"Expected 1 flash call, got {len(flash_models)}"
+        assert len(pro_models) == 1, f"Expected 1 pro call, got {len(pro_models)}"
+
+        # Clean
+        assert len(ctx.transactions) == 0
+        assert len(ctx.incidents) == 0
+
+    def test_invalid_source_id_fails_closed(self):
+        """Unknown source_id in synthesis → FAIL_CLOSED."""
+        sha = _make_sha("syn-bad")
+
+        class _Tx:
+            def __call__(self, payload):
+                msgs = payload.get("messages", [])
+                sys = msgs[0]["content"] if msgs else ""
+                if "extract claims" in sys.lower() or "classify" in sys.lower():
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "accepted": [{"source_id": "real-src", "claim_id": "c1"}],
+                        "rejected": [], "claims": [], "scores": {},
+                        "rationale": "ok",
+                    })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+                return {"choices": [{"message": {"content": json.dumps({
+                    "decision_id": "d1", "disposition": "READY_FOR_SYNTHESIS",
+                    "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
+                    "rationale": "x",
+                    "synthesis": {
+                        "inquiry": "Q",
+                        "executive_answer": "A",
+                        "findings": [{
+                            "finding_id": "f1",
+                            "statement": "S",
+                            "source_ids": ["FAKE-NONEXISTENT-SRC"],
+                            "confidence": "supported",
+                            "reasoning": "R",
+                        }],
+                        "unresolved_questions": [],
+                        "next_inquiry": "N",
+                    },
+                })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                              "total_tokens": 2}}
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+
+        class _R:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [{"id": "real-src", "content": "x",
+                         "author": {"name": "ext"}}]}
+
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+
+        reg = build_role_registry(client=client, moltbook_reader=_R())
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(), role_registry=reg,
+            campaign={"active_inquiry": "t", "objective": "T"})
+        orch.ctx.set_evidence_index(set())
+        ctx = orch.run()
+
+        # Must fail closed
+        assert ctx.status == "failed"
+        assert len(ctx.incidents) >= 1
+        assert any("unknown source_id" in inc["description"].lower()
+                   for inc in ctx.incidents)
+        assert "FAKE-NONEXISTENT" in ctx.incidents[0]["description"]
