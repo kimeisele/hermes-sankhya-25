@@ -67,27 +67,6 @@ def _load_config() -> dict:
     return cfg
 
 
-def _load_inquiry_objective(cfg: dict) -> str:
-    """Derive the active inquiry objective from config or inquiry file."""
-    if cfg.get("active_inquiry_objective", "").strip():
-        return cfg["active_inquiry_objective"].strip()
-    # Fall back to reading the first ## Question from the active inquiry file
-    target_id = cfg.get("active_inquiry", "")
-    inquiry_dir = _repo_root / "inquiries" / "open"
-    for fpath in inquiry_dir.glob("*.md"):
-        text = fpath.read_text(errors="replace")
-        if target_id and target_id in text:
-            # Extract the question line after "## Question"
-            for i, line in enumerate(text.splitlines()):
-                if line.strip().startswith("## Question"):
-                    for j in range(i + 1, min(i + 5, len(text.splitlines()))):
-                        candidate = text.splitlines()[j].strip()
-                        if candidate:
-                            return candidate
-                    break
-    return ""
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Moltbook Agency — single shift runner")
     parser.add_argument("--mode", choices=["dry-run", "observe"], default="dry-run")
@@ -147,7 +126,7 @@ def main() -> int:
                        "allow_original_posts": False},
         budget=budget, repo_provider=repo_provider, role_registry=role_registry,
         campaign={"active_inquiry": cfg.get("active_inquiry", ""),
-                  "objective": _load_inquiry_objective(cfg)})
+                  "objective": cfg.get("active_inquiry_objective", "")})
 
     # Load durable evidence index BEFORE execution
     from agency.evidence_index import load_evidence_index

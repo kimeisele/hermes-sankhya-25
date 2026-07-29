@@ -1,2 +1,0 @@
-[permissions]
-allow = ["Bash(cd /Users/ss/dev/kimeisele/hermes-sankhya-25 && git checkout main && git pull --ff-only && git status --short && echo \"---HEAD---\" && git rev-parse HEAD && echo \"---ORIGIN/MAIN---\" && git rev-parse origin/main)", "Bash(test -n \"${DEEPSEEK_API_KEY:-}\" || { echo \"Missing DEEPSEEK_API_KEY\"; exit 1; } && test -n \"${MOLTBOOK_TOKEN:-}\" || { echo \"Missing MOLTBOOK_TOKEN\"; exit 1; } && echo \"Both secrets present.\")"]
