@@ -51,20 +51,12 @@ def build_role_registry(client: DeepSeekClient | None = None,
         import json
         sd = Path(__file__).resolve().parents[1] / "schemas"
         # Domain-specific output schemas per role
-        scout_schema = json.loads((sd / "scout-output.schema.json").read_text())
-        clerk_schema = json.loads((sd / "records-clerk-output.schema.json").read_text())
         evidence_schema = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
         decision_schema = json.loads((sd / "agency-decision-v1.schema.json").read_text())
         engagement_schema = json.loads((sd / "engagement-proposal.schema.json").read_text())
         audit_schema = json.loads((sd / "audit-output.schema.json").read_text())
         proposal_schema = json.loads((sd / "engineering-proposal-v1.schema.json").read_text())
 
-        scout_adapter = RoleModelAdapter(client, client.flash_model,
-                                         flash_system or "You discover and deduplicate source candidates.",
-                                         scout_schema, is_write_critical=False)
-        clerk_adapter = RoleModelAdapter(client, client.flash_model,
-                                         flash_system or "You normalize metadata and preserve provenance.",
-                                         clerk_schema, is_write_critical=False)
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or "You extract claims and classify evidence.",
                                             evidence_schema, is_write_critical=False)
@@ -81,8 +73,8 @@ def build_role_registry(client: DeepSeekClient | None = None,
                                            pro_system or "You create engineering proposals.",
                                            proposal_schema, is_write_critical=True)
 
-        registry["scout"] = ScoutRole(adapter=scout_adapter, moltbook=moltbook_reader)
-        registry["records_clerk"] = RecordsClerkRole(adapter=clerk_adapter)
+        registry["scout"] = ScoutRole(moltbook=moltbook_reader)
+        registry["records_clerk"] = RecordsClerkRole()
         registry["evidence_analyst"] = EvidenceAnalystRole(adapter=evidence_adapter)
         registry["agency_director"] = AgencyDirectorRole(adapter=pro_adapter)
         registry["engagement_lead"] = EngagementLeadRole(adapter=engagement_adapter)
