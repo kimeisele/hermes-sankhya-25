@@ -12,6 +12,11 @@ on:
         default: "morning"
         type: choice
         options: [morning, evening]
+      ref:
+        description: "Branch or SHA to checkout"
+        required: false
+        default: "main"
+        type: string
 
 concurrency:
   group: moltbook-agency-observe
@@ -27,12 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SHIFT: "${{ inputs.shift || 'morning' }}"
+      SHIFT: "${{ github.event.schedule == '47 19 * * *' && 'evening' || inputs.shift || 'morning' }}"
       GH_RUN_ID: "${{ github.run_id }}"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: "${{ inputs.ref || 'main' }}"
 
       - uses: actions/setup-python@v5
         with:
@@ -88,7 +93,7 @@ jobs:
             --ctx-output /tmp/ctx_artifact.json
 
       - uses: actions/upload-artifact@v4
-        if: steps.config.outputs.enabled == 'true'
+        if: always() && steps.config.outputs.enabled == 'true'
         with:
           name: hq-report-observe-${{ github.run_id }}
           path: |

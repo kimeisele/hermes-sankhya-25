@@ -173,7 +173,50 @@ class ScoutRole:
 
         if self._adapter:
             result = self._adapter.invoke({**ctx_view, "new_candidates": new})
-            return _safe_result(self.ROLE, result)
+            role_result = _safe_result(self.ROLE, result)
+            if role_result.status != "COMPLETE":
+                return role_result
+            if "candidates" not in role_result.data:
+                return role_result
+
+            canonical_by_id: dict[str, dict[str, Any]] = {}
+            for c in new:
+                canonical_by_id[c["id"]] = c
+
+            merged: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            model_candidates = role_result.data.get("candidates", [])
+
+            for mc in model_candidates:
+                cid = mc.get("id", "")
+                # id is mandatory
+                if not cid:
+                    return RoleResult(self.ROLE, "FAIL_CLOSED",
+                        fail_reason="Scout model returned candidate without id")
+                # duplicate id
+                if cid in seen_ids:
+                    return RoleResult(self.ROLE, "FAIL_CLOSED",
+                        fail_reason=f"Scout model returned duplicate candidate id: {cid}")
+                seen_ids.add(cid)
+                # unknown id → FAIL_CLOSED; never accept unknown model candidates
+                orig = canonical_by_id.get(cid)
+                if not orig:
+                    return RoleResult(self.ROLE, "FAIL_CLOSED",
+                        fail_reason=f"Scout model returned unknown candidate id: {cid}")
+                # Rebuild entirely from the canonical record — model provides
+                # selection and ordering only.  No model field overrides canonical.
+                merged.append({
+                    "id": orig["id"],
+                    "url": orig.get("url", mc.get("url", "")),
+                    "author_handle": orig.get("author_handle", mc.get("author_handle", "unknown")),
+                    "content_type": orig.get("content_type", mc.get("content_type", "")),
+                    "untrusted": orig.get("untrusted", True),
+                    "content_excerpt": orig.get("content_excerpt", ""),
+                })
+
+            role_result.data["candidates"] = merged
+            role_result.data["candidates_found"] = len(merged)
+            return role_result
 
         return RoleResult(self.ROLE, "COMPLETE",
                           data={"candidates_found": len(new), "candidates": new},
