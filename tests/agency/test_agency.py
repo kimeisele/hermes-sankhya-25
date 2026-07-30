@@ -1204,3 +1204,93 @@ class TestEAContract:
         assert result.status == "COMPLETE", (
             f"Expected COMPLETE after repair, got {result.status}: {result.fail_reason}")
         assert model_calls == 2, f"Expected 2 calls (1 reject + 1 repair), got {model_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Evidence Analyst: thinking mode disabled
+# ---------------------------------------------------------------------------
+
+class TestEAThinking:
+    """Evidence Analyst must disable provider thinking mode.
+    All other adapters must remain provider-default (None)."""
+
+    def test_evidence_analyst_disables_thinking(self):
+        """Initial call includes 'thinking': {'type': 'disabled'}."""
+        payloads = []
+
+        class _Tx:
+            def __call__(self, payload):
+                payloads.append(dict(payload))  # shallow copy
+                return {"choices": [{"message": {"content": json.dumps({
+                    "accepted": [
+                        {"source_id": "s", "claim_id": "c",
+                         "claim_kind": "assertion", "claim_text": "T"},
+                    ],
+                    "rejected": [],
+                })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        ea = reg["evidence_analyst"]
+        result = ea({"source_candidates": [
+            {"id": "s", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "text."},
+        ]})
+
+        assert len(payloads) == 1, f"Expected 1 call, got {len(payloads)}"
+        assert payloads[0]["thinking"] == {"type": "disabled"}
+        assert result.status == "COMPLETE"
+
+    def test_evidence_analyst_repair_keeps_thinking_disabled(self):
+        """Repair call also carries 'thinking': {'type': 'disabled'}."""
+        payloads = []
+
+        class _Tx:
+            def __call__(self, payload):
+                payloads.append(dict(payload))
+                if len(payloads) == 1:
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "accepted": [], "rejected": [],
+                        "rationale": "extra",
+                    })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                return {"choices": [{"message": {"content": json.dumps({
+                    "accepted": [], "rejected": [],
+                })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        ea = reg["evidence_analyst"]
+        result = ea({"source_candidates": [
+            {"id": "s", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "text."},
+        ]})
+
+        assert len(payloads) == 2, f"Expected 2 calls, got {len(payloads)}"
+        assert all(p["thinking"] == {"type": "disabled"} for p in payloads)
+        assert result.status == "COMPLETE"
+
+    def test_only_evidence_analyst_forces_thinking_mode(self):
+        """EA adapter has thinking_enabled=False; all others are None."""
+        from agency.model_client import DeepSeekClient
+
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+
+        # Evidence Analyst is the only one with thinking_enabled set
+        for role_name, adapter in reg.items():
+            if not hasattr(adapter, '_adapter') or adapter._adapter is None:
+                continue
+            if role_name == "evidence_analyst":
+                assert adapter._adapter.thinking_enabled is False, (
+                    f"EA must have thinking_enabled=False, got {adapter._adapter.thinking_enabled}")
+            else:
+                assert adapter._adapter.thinking_enabled is None, (
+                    f"{role_name} must have thinking_enabled=None, "
+                    f"got {adapter._adapter.thinking_enabled}")
