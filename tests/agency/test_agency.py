@@ -2077,3 +2077,203 @@ class TestSourceAccounting:
                           "maximize claim count"):
             assert forbidden not in prompt, (
                 f"Forbidden phrase found in EA prompt: {forbidden}")
+
+
+# ---------------------------------------------------------------------------
+# Director claim-kind fidelity tests
+# ---------------------------------------------------------------------------
+
+_B007_CANONICAL_CLAIM = (
+    "After monitoring thousands of agent sessions at AgentSteer, "
+    "here are the three most commonly missed logs: Permission "
+    "escalation patterns. Not just 'agent ran sudo' — but when "
+    "an agent gradually expands its own access over multiple "
+    "steps. First it reads a config, then it modifies it, then "
+    "it uses the modified config to access something new. Each "
+    "step looks innocent. The pattern is the signal."
+)
+
+class TestDirectorClaimKind:
+    """Director finding_kind must equal the claim_kind of all quoted claims."""
+
+    @staticmethod
+    def _run_kind_test(claim_kind, finding_kind):
+        sid = "src-ck"
+        raw = "Test claim content for kind validation purposes."
+        canonical = [_make_epi_canonical(sid, "vantik", raw)]
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": claim_kind,
+                     "span_ids": _ea_span_ids(sid)}]
+        f = _make_finding("f1", "Statement.", [sid], finding_kind,
+            [{"source_id": sid, "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        return _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn),
+                        canonical)
+
+    @staticmethod
+    def _run_mixed_test(kind_a, kind_b):
+        sid_a, sid_p = "src-a", "src-b"
+        canonical = [
+            _make_epi_canonical(sid_a, "a", "Assertion text for testing."),
+            _make_epi_canonical(sid_p, "b", "Second text for testing purposes."),
+        ]
+        evidence = [
+            {"source_id": sid_a, "claim_id": "c1", "claim_kind": kind_a,
+             "span_ids": _ea_span_ids(sid_a)},
+            {"source_id": sid_p, "claim_id": "c2", "claim_kind": kind_b,
+             "span_ids": _ea_span_ids(sid_p)},
+        ]
+        f = _make_finding("f1", "Mixed.", [sid_a, sid_p], kind_a,
+            [{"source_id": sid_a, "claim_id": "c1"},
+             {"source_id": sid_p, "claim_id": "c2"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        return _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn),
+                        canonical)
+
+    # -- valid: exact match --
+
+    @pytest.mark.parametrize("kind", [
+        "assertion", "opinion", "proposal", "question", "warning", "unknown",
+    ])
+    def test_valid_exact_match(self, kind):
+        ctx = self._run_kind_test(kind, kind)
+        assert ctx.status == "completed"
+        assert ctx.incidents == []
+        assert len(ctx.decisions) == 1
+
+    # -- invalid: mismatched kinds --
+
+    @pytest.mark.parametrize("claim_kind,finding_kind", [
+        ("assertion", "proposal"),
+        ("assertion", "opinion"),
+        ("opinion", "assertion"),
+        ("opinion", "proposal"),
+        ("proposal", "assertion"),
+        ("question", "assertion"),
+        ("question", "proposal"),
+        ("warning", "assertion"),
+        ("warning", "proposal"),
+        ("unknown", "assertion"),
+    ])
+    def test_mismatched_kind_fails(self, claim_kind, finding_kind):
+        ctx = self._run_kind_test(claim_kind, finding_kind)
+        assert ctx.status == "failed"
+        assert ctx.decisions == []
+        assert len(ctx.incidents) == 1
+        assert ctx.incidents[0]["severity"] == "high"
+        assert ctx.incidents[0]["description"] == (
+            f"Finding f1: finding_kind '{finding_kind}' "
+            f"does not match claim kind '{claim_kind}'"
+        )
+
+    # -- mixed claim kinds in one finding --
+
+    @pytest.mark.parametrize("kind_a,kind_b", [
+        ("assertion", "proposal"),
+        ("assertion", "opinion"),
+        ("question", "assertion"),
+        ("warning", "assertion"),
+    ])
+    def test_mixed_kinds_in_one_finding_fails(self, kind_a, kind_b):
+        ctx = self._run_mixed_test(kind_a, kind_b)
+        assert ctx.status == "failed"
+        assert ctx.decisions == []
+        assert len(ctx.incidents) == 1
+        assert ctx.incidents[0]["severity"] == "high"
+        sorted_kinds = sorted([kind_a, kind_b])
+        assert ctx.incidents[0]["description"] == (
+            f"Finding f1: mixed claim kinds {sorted_kinds} — "
+            "all quoted claims must have the same claim_kind"
+        )
+
+    # -- B007 live-shaped regression --
+
+    def test_b007_assertion_reported_as_proposal_fails(self):
+        sid = "src-b007"
+        canonical = [_make_epi_canonical(sid, "murphyhook",
+                                         _B007_CANONICAL_CLAIM)]
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids(sid)}]
+        f = _make_finding("f-1",
+            "murphyhook proposes logging permission escalation patterns.",
+            [sid], "proposal",
+            [{"source_id": sid, "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn),
+                       canonical)
+        assert ctx.status == "failed"
+        assert ctx.decisions == []
+        assert len(ctx.incidents) == 1
+        assert ctx.incidents[0]["severity"] == "high"
+        assert ctx.incidents[0]["description"] == (
+            "Finding f-1: finding_kind 'proposal' does not match "
+            "claim kind 'assertion'")
+
+    def test_b007_assertion_reported_as_assertion_passes(self):
+        sid = "src-b007b"
+        canonical = [_make_epi_canonical(sid, "murphyhook",
+                                         _B007_CANONICAL_CLAIM)]
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids(sid)}]
+        f = _make_finding("f-1",
+            "murphyhook reports that permission-escalation patterns "
+            "are among the logs most commonly missed and describes them "
+            "as multi-step access expansion.",
+            [sid], "assertion",
+            [{"source_id": sid, "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn),
+                       canonical)
+        assert ctx.status == "completed"
+        assert ctx.incidents == []
+        assert len(ctx.decisions) == 1
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        inj = f1["source_quotes"][0]["quote"]
+        ev = next(e for e in ctx.accepted_evidence if e["claim_id"] == "c1")
+        assert inj == ev["claim_text"]
+
+    # -- prompt contract --
+
+    def test_director_prompt_contains_claim_kind_instruction(self):
+        from agency.model_client import DeepSeekClient
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        director = reg["agency_director"]
+        prompt = director._adapter.system_prompt
+
+        # Required new passage
+        required = (
+            "Set each finding_kind to the exact claim_kind shared by every "
+            "quoted claim. A finding may quote only claims with one shared "
+            "claim_kind. The research objective controls relevance, not "
+            "source modality. Do not infer a proposal from an assertion or "
+            "opinion. If evidence of different kinds is relevant, emit "
+            "separate findings. Use unknown only for claims classified as "
+            "unknown."
+        )
+        assert required in prompt, "Missing claim-kind fidelity instruction"
+
+        # Existing safety phrases preserved
+        assert "Report what sources assert, opine, propose, ask, or warn about." in prompt
+        assert "Preserve those distinctions." in prompt
+        assert "Never convert a question or warning into a requirement." in prompt
+        assert "Never invent a solution." in prompt
+        assert "Never recommend implementation work." in prompt
+
+        # Forbidden reclassification language
+        for forbidden in ("assertions may become proposals",
+                          "opinions may become proposals",
+                          "finding_kind is independent"):
+            assert forbidden not in prompt, (
+                f"Forbidden phrase: {forbidden}")
