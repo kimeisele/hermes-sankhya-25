@@ -96,6 +96,21 @@ def build_role_registry(client: DeepSeekClient | None = None,
             "implementation work. Never select the next inquiry. Unresolved "
             "questions must describe missing evidence, not prescribe action."),
                                        _model_schema, is_write_critical=True)
+        # Separate Director adapter with thinking disabled.
+        # pro_adapter remains provider-default for Auditor use.
+        director_adapter = RoleModelAdapter(client, client.pro_model,
+                                            pro_system or (
+            "You are a source-grounded research synthesizer, not an engineering "
+            "adviser. Answer only the configured research objective. Report "
+            "what sources assert, opine, propose, ask, or warn about. "
+            "Preserve those distinctions. Distinguish internal discussion from "
+            "external contribution. Never describe internal repetition as "
+            "independent confirmation. Never convert a question or warning into "
+            "a requirement. Never invent a solution. Never recommend "
+            "implementation work. Never select the next inquiry. Unresolved "
+            "questions must describe missing evidence, not prescribe action."),
+                                            _model_schema, is_write_critical=True,
+                                            thinking_enabled=False)
         engagement_adapter = RoleModelAdapter(client, client.pro_model,
                                               pro_system or "You draft engagement proposals.",
                                               engagement_schema, is_write_critical=True)
@@ -109,7 +124,7 @@ def build_role_registry(client: DeepSeekClient | None = None,
         registry["scout"] = ScoutRole(moltbook=moltbook_reader)
         registry["records_clerk"] = RecordsClerkRole()
         registry["evidence_analyst"] = EvidenceAnalystRole(adapter=evidence_adapter)
-        registry["agency_director"] = AgencyDirectorRole(adapter=pro_adapter)
+        registry["agency_director"] = AgencyDirectorRole(adapter=director_adapter)
         registry["engagement_lead"] = EngagementLeadRole(adapter=engagement_adapter)
         registry["auditor"] = AuditorRole(adapter=auditor_adapter, pro_adapter=pro_adapter)
         registry["engineering_planner"] = EngineeringPlannerRole(adapter=planner_adapter)
