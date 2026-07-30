@@ -61,25 +61,9 @@ def build_role_registry(client: DeepSeekClient | None = None,
 
         import copy as _copy
 
-        # Derive a reduced Evidence Analyst model-output schema.
-        # The committed schema permits optional 'claims', 'scores', and
-        # 'rationale' that the orchestrator does not consume.  Removing
-        # them from the model contract may improve structured-output
-        # reliability by reducing the output surface.
-        _ea_model_schema = _copy.deepcopy(evidence_schema)
-        for _field in ("claims", "scores", "rationale"):
-            _ea_model_schema["properties"].pop(_field, None)
-        _ea_model_schema["properties"] = {
-            k: v for k, v in _ea_model_schema["properties"].items()
-            if k in ("accepted", "rejected")
-        }
-        # Allow additional properties at the top level so existing
-        # responses that still include the removed fields are not
-        # rejected — the model just won't be instructed to produce them.
-        _ea_model_schema.pop("additionalProperties", None)
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or "You extract claims and classify evidence.",
-                                            _ea_model_schema, is_write_critical=False)
+                                            evidence_schema, is_write_critical=False)
         # Derive Director model-output schema from committed durable schema.
         # The model must not produce deterministic metadata fields.
         _finding_props = list(decision_schema["properties"]["synthesis"]

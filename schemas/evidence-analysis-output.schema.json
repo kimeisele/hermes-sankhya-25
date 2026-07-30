@@ -33,9 +33,6 @@
           "reason": {"type": "string", "minLength": 1}
         }
       }
-    },
-    "claims": {"type": "array", "items": {"type": "object"}},
-    "scores": {"type": "object"},
-    "rationale": {"type": "string"}
+    }
   }
 }

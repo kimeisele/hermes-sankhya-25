@@ -265,7 +265,6 @@ _OBJECTIVE = "What claims and proposals appear in the discussion?"
 def _ev_resp(accepted_list, rejected=None):
     return {"choices": [{"message": {"content": json.dumps({
         "accepted": accepted_list, "rejected": rejected or [],
-        "claims": [], "scores": {}, "rationale": "test",
     })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
 
 
@@ -709,7 +708,7 @@ class TestFakeDeepSeekE2E:
                 return {"choices": [{"message": {"content": json.dumps({
                     "accepted": [{"source_id": "new-claim-1", "claim_id": "c1",
                      "claim_kind": "assertion", "claim_text": "commit_hash is essential"}],
-                    "rejected": [], "claims": [], "scores": {}, "rationale": "Valid claim"})}}],
+                    "rejected": []})}}],
                     "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
         from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
@@ -750,7 +749,7 @@ class TestDeterministicIngestion:
             def __call__(self, payload):
                 model_calls.append(payload.get("model", ""))
                 return {"choices": [{"message": {"content": json.dumps({
-                    "accepted": [], "rejected": [], "claims": [], "scores": {}, "rationale": "test"})}}],
+                    "accepted": [], "rejected": []})}}],
                     "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}}
         from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
@@ -867,7 +866,7 @@ class TestDirectorFailClosed:
                     return {"choices": [{"message": {"content": json.dumps({
                         "accepted": [{"source_id": accepted_src, "claim_id": "c1",
                          "claim_kind": "assertion", "claim_text": "X"}],
-                        "rejected": [], "claims": [], "scores": {}, "rationale": "ok"})}}],
+                        "rejected": []})}}],
                         "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}}
                 raise RuntimeError(raw_error)
         from agency.model_client import DeepSeekClient
@@ -1108,8 +1107,8 @@ class TestEAContract:
             f"Expected only accepted/rejected, got {sorted(schema['properties'].keys())}")
         # Required
         assert schema["required"] == ["accepted", "rejected"]
-        # additionalProperties is removed from model-facing schema
-        # (retained only on committed schema)
+        # additionalProperties
+        assert schema["additionalProperties"] is False
 
         # Accepted item contract unchanged
         acc_props = schema["properties"]["accepted"]["items"]["properties"]
@@ -1182,3 +1181,42 @@ class TestEAContract:
         acc = result.data.get("accepted", [])
         assert len(acc) == 1
         assert acc[0]["claim_text"] == "Exact claim text."
+
+    def test_extra_top_level_field_triggers_repair(self):
+        """A response with rationale (removed field) triggers schema
+        rejection and the existing repair call."""
+        model_calls = 0
+
+        class _Tx:
+            def __call__(self, payload):
+                nonlocal model_calls
+                model_calls += 1
+                # Always return the same response with rationale
+                return {"choices": [{"message": {"content": json.dumps({
+                    "accepted": [
+                        {"source_id": "src-1", "claim_id": "claim-1",
+                         "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                    ],
+                    "rejected": [],
+                    "rationale": "extra field",
+                })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                              "total_tokens": 150}}
+
+        from agency.model_client import DeepSeekClient as _DS
+        client_ds = _DS(transport=_Tx())
+        reg = build_role_registry(client=client_ds)
+        ea = reg["evidence_analyst"]
+
+        result = ea({"source_candidates": [
+            {"id": "src-1", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "Evidence text."},
+        ]})
+
+        # The first response fails schema validation (extra field),
+        # triggering the existing repair call.  Both calls return the
+        # same invalid response, so the result is FAIL_CLOSED.
+        assert result.status == "FAIL_CLOSED", (
+            f"Expected FAIL_CLOSED after schema rejection + repair failure, "
+            f"got {result.status}")
+        assert model_calls == 2, (
+            f"Expected 2 calls (1 fail + 1 repair), got {model_calls}")
