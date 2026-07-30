@@ -324,7 +324,7 @@ def _run_epi(evidence_accepted, director_resp, canonical_items,
 
     class _R:
         def fetch_post(self, pid):
-            return {"post": {"id": pid, "content": "body", "author": {"name": "op"}}}
+            return {"post": {}}
         def fetch_comments(self, pid):
             return {"comments": [{"id": c["id"], "content": c["content_excerpt"],
                      "author": {"name": c["author_handle"]}} for c in canonical_items]}
@@ -725,7 +725,7 @@ class TestFakeDeepSeekE2E:
         client = DeepSeekClient(transport=_Tx())
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "Test content.", "author": {"name": "post_author"}}}
+                return {"post": {}}
             def fetch_comments(self, pid):
                 return {"comments": [{"id": "new-claim-1",
                     "content": "commit_hash is essential", "author": {"name": "test_agent"}}]}
@@ -766,7 +766,7 @@ class TestDeterministicIngestion:
         client = DeepSeekClient(transport=_Tx())
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "body", "author": {"name": "op"}}}
+                return {"post": {}}
             def fetch_comments(self, pid):
                 return {"comments": [{"id": "c-1", "content": sentinel, "author": {"name": "vantik"}}]}
         reg = build_role_registry(client=client, moltbook_reader=_R())
@@ -884,7 +884,7 @@ class TestDirectorFailClosed:
         client = DeepSeekClient(transport=_Tx())
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+                return {"post": {}}
             def fetch_comments(self, pid):
                 return {"comments": [{"id": accepted_src, "content": "receipt evidence",
                          "author": {"name": "vantik"}}]}
@@ -1042,7 +1042,7 @@ class TestEAFailClosed:
 
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+                return {"post": {}}
             def fetch_comments(self, pid):
                 return {"comments": [
                     {"id": "src-1", "content": "Evidence text.",
@@ -1691,3 +1691,157 @@ class TestSourceFidelity:
         ev = ctx.accepted_evidence[0]
         assert ev["source_content_hash"] == "abc123"
         assert ev["span_ids"] == ["s1/span/0"]
+
+
+# ---------------------------------------------------------------------------
+# Source-accounting contract tests
+# ---------------------------------------------------------------------------
+
+class TestSourceAccounting:
+    """Structural source-accounting validation for Evidence Analyst output."""
+
+    # -- helpers --
+    @staticmethod
+    def _run_accounting_test(input_sources, accepted, rejected):
+        """Build an orchestrator, inject sources, and run the EA accounting
+        path directly via the orchestrator's _validate_ea_source_accounting."""
+        sha = _make_sha("acct")
+        reg = build_role_registry()
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
+                                  role_registry=reg)
+        candidates = []
+        for src in input_sources:
+            orch.ctx.set_raw_source(
+                src["source_id"], src.get("url", ""),
+                src.get("author_handle", "unknown"),
+                src.get("content_type", "comment"),
+                src.get("text", "placeholder text."),
+            )
+            candidates.append({
+                "id": src["source_id"],
+                "url": src.get("url", ""),
+                "author_handle": src.get("author_handle", "unknown"),
+                "content_type": src.get("content_type", "comment"),
+                "untrusted": True,
+                "content_excerpt": src.get("text", "placeholder text."),
+            })
+        orch.ctx.set_source_candidates(candidates)
+        ea_data = {"accepted": accepted, "rejected": rejected}
+        err = orch._validate_ea_source_accounting(ea_data)
+        return orch, err
+
+    def test_all_sources_accepted(self):
+        """All model-facing sources in accepted → pass."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."},
+                {"source_id": "s2", "author_handle": "b", "text": "B."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+                      {"source_id": "s2", "claim_id": "c2", "claim_kind": "assertion", "span_ids": ["s2/span/0"]}],
+            rejected=[],
+        )
+        assert err is None
+
+    def test_mix_accepted_and_rejected_all_accounted(self):
+        """Mix of accepted and rejected, all sources accounted → pass."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."},
+                {"source_id": "s2", "author_handle": "b", "text": "B."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[{"source_id": "s2", "reason": "no relevant claim"}],
+        )
+        assert err is None
+
+    def test_multiple_accepted_claims_for_one_source(self):
+        """Same source_id multiple times in accepted → allowed."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+                      {"source_id": "s1", "claim_id": "c2", "claim_kind": "question", "span_ids": ["s1/span/0"]}],
+            rejected=[],
+        )
+        assert err is None
+
+    def test_b001_shaped_accounting(self):
+        """3 accepted + 3 rejected = 6 accounted (B001 shape) → pass."""
+        srcs = [{"source_id": f"s{i}", "author_handle": "a", "text": f"T{i}."} for i in range(6)]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": f"s{i}", "claim_id": f"c{i}", "claim_kind": "assertion", "span_ids": [f"s{i}/span/0"]} for i in range(3)],
+            rejected=[{"source_id": f"s{i}", "reason": "duplicate"} for i in range(3, 6)],
+        )
+        assert err is None
+
+    def test_source_absent_from_both_arrays(self):
+        """Source in neither accepted nor rejected → FAIL_CLOSED."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."},
+                {"source_id": "s2", "author_handle": "b", "text": "B."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[],
+        )
+        assert err is not None
+        assert "unaccounted source_id: s2" in err
+
+    def test_source_in_accepted_and_rejected(self):
+        """Same source in both arrays → FAIL_CLOSED."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[{"source_id": "s1", "reason": "bad"}],
+        )
+        assert err is not None
+        assert "present in both accepted and rejected" in err
+
+    def test_duplicate_rejected_entries(self):
+        """Same source_id rejected twice → FAIL_CLOSED."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[],
+            rejected=[{"source_id": "s1", "reason": "r1"},
+                      {"source_id": "s1", "reason": "r2"}],
+        )
+        assert err is not None
+        assert "duplicate rejected source_id: s1" in err
+
+    def test_unknown_accepted_source_id(self):
+        """Accepted source_id not in input → FAIL_CLOSED."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+                      {"source_id": "FAKE", "claim_id": "c2", "claim_kind": "assertion", "span_ids": ["FAKE/span/0"]}],
+            rejected=[],
+        )
+        assert err is not None
+        assert "unknown accepted source_id: FAKE" in err
+
+    def test_unknown_rejected_source_id(self):
+        """Rejected source_id not in input → FAIL_CLOSED."""
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[{"source_id": "FAKE", "reason": "bad"}],
+        )
+        assert err is not None
+        assert "unknown rejected source_id: FAKE" in err
+
+    def test_b007_shaped_accounting(self):
+        """4 sources, 3 accepted, 1 unaccounted (B007 shape) → FAIL_CLOSED."""
+        srcs = [{"source_id": f"s{i}", "author_handle": "a", "text": f"T{i}."} for i in range(4)]
+        orch, err = self._run_accounting_test(
+            srcs,
+            accepted=[{"source_id": f"s{i}", "claim_id": f"c{i}", "claim_kind": "assertion", "span_ids": [f"s{i}/span/0"]} for i in range(3)],
+            rejected=[],
+        )
+        assert err is not None
+        assert "unaccounted source_id: s3" in err

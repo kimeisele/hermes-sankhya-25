@@ -71,6 +71,10 @@ def build_role_registry(client: DeepSeekClient | None = None,
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or (
             "You extract claims and classify evidence. "
+            "Account for every input source. For each source, either return "
+            "one or more accepted claims or exactly one rejected entry "
+            "explaining why no objective-relevant claim was extracted. "
+            "Never place the same source_id in both accepted and rejected. "
             "For each claim, select one or more consecutive span_ids "
             "from the same source that together contain the exact claim text. "
             "Do not modify, paraphrase, or reconstruct the text."),
@@ -259,6 +263,82 @@ class AgencyOrchestrator:
             self._invoke_and_apply("engagement_lead")
         elif phase == "ENGINEERING_PLANNER":
             self._invoke_and_apply("engineering_planner")
+
+    # ------------------------------------------------------------------
+    # Evidence Analyst source accounting
+    # ------------------------------------------------------------------
+
+    def _validate_ea_source_accounting(
+        self,
+        data: dict[str, Any],
+    ) -> str | None:
+        """Validate that every model-facing input source is accounted for.
+
+        Returns ``None`` on success, or an error string describing the
+        first violation found.
+        """
+        ea_view = self.ctx.view_for("evidence_analyst")
+        input_source_ids = [
+            source["source_id"]
+            for source in ea_view.get("sources", [])
+        ]
+        input_set = set(input_source_ids)
+
+        accepted_source_ids = [
+            entry.get("source_id", "")
+            for entry in data.get("accepted", [])
+        ]
+        rejected_source_ids = [
+            entry.get("source_id", "")
+            for entry in data.get("rejected", [])
+        ]
+
+        # 1. Unknown accepted source_id
+        for sid in accepted_source_ids:
+            if sid not in input_set:
+                return (
+                    "Evidence Analyst source accounting: "
+                    f"unknown accepted source_id: {sid}"
+                )
+
+        # 2. Unknown rejected source_id
+        for sid in rejected_source_ids:
+            if sid not in input_set:
+                return (
+                    "Evidence Analyst source accounting: "
+                    f"unknown rejected source_id: {sid}"
+                )
+
+        # 3. Duplicate rejected source_id
+        seen_rejected: set[str] = set()
+        for sid in rejected_source_ids:
+            if sid in seen_rejected:
+                return (
+                    "Evidence Analyst source accounting: "
+                    f"duplicate rejected source_id: {sid}"
+                )
+            seen_rejected.add(sid)
+
+        accepted_set = set(accepted_source_ids)
+        rejected_set = set(rejected_source_ids)
+
+        # 4. Source in both accepted and rejected
+        for sid in input_source_ids:
+            if sid in accepted_set and sid in rejected_set:
+                return (
+                    "Evidence Analyst source accounting: "
+                    f"source_id present in both accepted and rejected: {sid}"
+                )
+
+        # 5. Unaccounted source
+        for sid in input_source_ids:
+            if sid not in accepted_set and sid not in rejected_set:
+                return (
+                    "Evidence Analyst source accounting: "
+                    f"unaccounted source_id: {sid}"
+                )
+
+        return None
 
     # ------------------------------------------------------------------
     # Director review
@@ -531,6 +611,12 @@ class AgencyOrchestrator:
         elif role_name == "evidence_analyst" and result.status == "COMPLETE":
             accepted = data.get("accepted", [])
             rejected = data.get("rejected", [])
+            # Source accounting: every input source must be in accepted or rejected
+            acct_err = self._validate_ea_source_accounting(data)
+            if acct_err is not None:
+                self.ctx.record_incident(acct_err, severity="high")
+                self.ctx.close("failed")
+                return
             if accepted:
                 canonical_by_id: dict[str, dict[str, Any]] = {}
                 for sc in self.ctx.source_candidates:
