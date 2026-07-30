@@ -1271,7 +1271,7 @@ class TestEAThinking:
         assert all(p["thinking"] == {"type": "disabled"} for p in payloads)
         assert result.status == "COMPLETE"
 
-    def test_only_evidence_analyst_forces_thinking_mode(self):
+    def test_only_evidence_analyst_and_director_force_thinking_mode(self):
         """EA and Director have thinking_enabled=False; all other adapters are None."""
         from agency.model_client import DeepSeekClient
 
@@ -1324,19 +1324,29 @@ class TestEAThinking:
         assert payloads[0]["thinking"] == {"type": "disabled"}
         assert result.status == "COMPLETE"
 
-    def test_auditor_pro_adapter_keeps_provider_default(self):
-        """Auditor's _pro_adapter must not force thinking mode."""
-        from agency.model_client import DeepSeekClient
+    def test_auditor_pro_adapter_invoke_omits_thinking(self):
+        """Auditor's _pro_adapter.invoke() must not include 'thinking' in
+        payload and must return success."""
+        payloads = []
 
         class _Tx:
             def __call__(self, payload):
-                return {"choices": [{"message": {"content": "{}"}}],
-                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                payloads.append(dict(payload))
+                return _dir_resp("RECORD_ONLY")
 
+        from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
         reg = build_role_registry(client=client)
         auditor = reg["auditor"]
 
-        # Adapter check: both _adapter (flash) and _pro_adapter (pro) default
-        assert auditor._adapter.thinking_enabled is None
         assert auditor._pro_adapter.thinking_enabled is None
+
+        result = auditor._pro_adapter.invoke({
+            "findings": ["test_finding"],
+            "budget": {"role_calls_used": 1, "max_role_calls": 20},
+            "campaign": {"objective": "Test"},
+        })
+
+        assert len(payloads) == 1
+        assert "thinking" not in payloads[0]
+        assert result.success is True
