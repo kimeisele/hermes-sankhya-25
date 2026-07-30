@@ -265,7 +265,6 @@ _OBJECTIVE = "What claims and proposals appear in the discussion?"
 def _ev_resp(accepted_list, rejected=None):
     return {"choices": [{"message": {"content": json.dumps({
         "accepted": accepted_list, "rejected": rejected or [],
-        "claims": [], "scores": {}, "rationale": "test",
     })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
 
 
@@ -709,7 +708,7 @@ class TestFakeDeepSeekE2E:
                 return {"choices": [{"message": {"content": json.dumps({
                     "accepted": [{"source_id": "new-claim-1", "claim_id": "c1",
                      "claim_kind": "assertion", "claim_text": "commit_hash is essential"}],
-                    "rejected": [], "claims": [], "scores": {}, "rationale": "Valid claim"})}}],
+                    "rejected": []})}}],
                     "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
         from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
@@ -750,7 +749,7 @@ class TestDeterministicIngestion:
             def __call__(self, payload):
                 model_calls.append(payload.get("model", ""))
                 return {"choices": [{"message": {"content": json.dumps({
-                    "accepted": [], "rejected": [], "claims": [], "scores": {}, "rationale": "test"})}}],
+                    "accepted": [], "rejected": []})}}],
                     "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}}
         from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
@@ -867,7 +866,7 @@ class TestDirectorFailClosed:
                     return {"choices": [{"message": {"content": json.dumps({
                         "accepted": [{"source_id": accepted_src, "claim_id": "c1",
                          "claim_kind": "assertion", "claim_text": "X"}],
-                        "rejected": [], "claims": [], "scores": {}, "rationale": "ok"})}}],
+                        "rejected": []})}}],
                         "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}}
                 raise RuntimeError(raw_error)
         from agency.model_client import DeepSeekClient
@@ -1077,3 +1076,131 @@ class TestEAFailClosed:
 
         assert result.status == "NOOP", f"Expected NOOP, got {result.status}"
         assert model_calls == 0, f"Expected 0 model calls, got {model_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Evidence Analyst: minimized model-facing schema
+# ---------------------------------------------------------------------------
+
+class TestEAContract:
+    """The model-facing Evidence Analyst schema must only expose
+    'accepted' and 'rejected'. The committed schema retains its
+    broader definition."""
+
+    def test_model_facing_schema_has_only_accepted_and_rejected(self):
+        """Build the real registry and inspect the EA adapter schema."""
+        from agency.model_client import DeepSeekClient
+
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        ea = reg["evidence_analyst"]
+        schema = ea._adapter.output_schema
+
+        assert set(schema["properties"].keys()) == {"accepted", "rejected"}, (
+            f"Expected only accepted/rejected, got {sorted(schema['properties'].keys())}")
+        assert schema["required"] == ["accepted", "rejected"]
+        assert schema["additionalProperties"] is False
+
+        # Accepted item contract unchanged
+        acc_req = schema["properties"]["accepted"]["items"]["required"]
+        assert set(acc_req) == {"source_id", "claim_id", "claim_kind", "claim_text"}
+        acc_props = schema["properties"]["accepted"]["items"]["properties"]
+        assert acc_props["claim_kind"]["enum"] == ["assertion", "opinion", "proposal",
+                                                    "question", "warning", "unknown"]
+
+        # Rejected item contract unchanged
+        rej_req = schema["properties"]["rejected"]["items"]["required"]
+        assert set(rej_req) == {"source_id", "reason"}
+
+    def test_committed_schema_retains_broader_properties(self):
+        """Load the committed schema file directly and prove it still has
+        claims, scores, and rationale."""
+        sd = Path(__file__).resolve().parents[2] / "schemas"
+        committed = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
+        props = committed["properties"]
+        for field in ("accepted", "rejected", "claims", "scores", "rationale"):
+            assert field in props, f"Committed schema missing field: {field}"
+
+    def test_valid_response_with_only_accepted_and_rejected(self):
+        """A response with only accepted+rejected must succeed in one call."""
+        model_calls = 0
+
+        class _Tx:
+            def __call__(self, payload):
+                nonlocal model_calls
+                model_calls += 1
+                return {"choices": [{"message": {"content": json.dumps({
+                    "accepted": [
+                        {"source_id": "src-1", "claim_id": "claim-1",
+                         "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                    ],
+                    "rejected": [],
+                })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                              "total_tokens": 150}}
+
+        from agency.model_client import DeepSeekClient as _DS
+        client_ds = _DS(transport=_Tx())
+        reg = build_role_registry(client=client_ds)
+        ea = reg["evidence_analyst"]
+
+        result = ea({"source_candidates": [
+            {"id": "src-1", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "Evidence text."},
+        ]})
+
+        assert result.status == "COMPLETE", (
+            f"Expected COMPLETE, got {result.status}: {result.fail_reason}")
+        assert model_calls == 1, f"Expected 1 call (no repair), got {model_calls}"
+        acc = result.data.get("accepted", [])
+        assert len(acc) == 1
+        assert acc[0]["claim_text"] == "Exact claim text."
+
+    def test_extra_field_repairs_on_second_call(self):
+        """First response has rationale (extra field → schema rejection).
+        Second response is valid.  Two calls total, COMPLETE."""
+        model_calls = 0
+
+        class _Tx:
+            def __call__(self, payload):
+                nonlocal model_calls
+                model_calls += 1
+                if model_calls == 1:
+                    # Extra field: rationale
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "accepted": [
+                            {"source_id": "src-1", "claim_id": "claim-1",
+                             "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                        ],
+                        "rejected": [],
+                        "rationale": "extra field",
+                    })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                                  "total_tokens": 150}}
+                else:
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "accepted": [
+                            {"source_id": "src-1", "claim_id": "claim-1",
+                             "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                        ],
+                        "rejected": [],
+                    })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                                  "total_tokens": 150}}
+
+        from agency.model_client import DeepSeekClient as _DS
+        client_ds = _DS(transport=_Tx())
+        reg = build_role_registry(client=client_ds)
+        ea = reg["evidence_analyst"]
+
+        result = ea({"source_candidates": [
+            {"id": "src-1", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "Evidence text."},
+        ]})
+
+        assert result.status == "COMPLETE", (
+            f"Expected COMPLETE after repair, got {result.status}: {result.fail_reason}")
+        assert model_calls == 2, f"Expected 2 calls (1 reject + 1 repair), got {model_calls}"
