@@ -229,6 +229,13 @@ class EvidenceAnalystRole:
 
         if self._adapter:
             result = self._adapter.invoke(ctx_view)
+            # An empty model response when source candidates exist is a
+            # hard failure — the model had input but produced nothing.
+            if not result.success and result.error_kind == "empty":
+                return RoleResult(self.ROLE, "FAIL_CLOSED",
+                                  fail_reason=f"Model error: {result.error}",
+                                  token_estimate=result.total_tokens,
+                                  cost_estimate=result.estimated_cost)
             return _safe_result(self.ROLE, result)
 
         accepted, rejected = [], []
