@@ -956,3 +956,124 @@ class TestDirectorContext:
             "Evidence Analyst must receive source_candidates")
         assert len(ea_view["source_candidates"]) == 1
         assert ea_view["source_candidates"][0]["id"] == "src-1"
+
+
+# ---------------------------------------------------------------------------
+# Evidence Analyst: empty model output must fail closed
+# ---------------------------------------------------------------------------
+
+class TestEAFailClosed:
+    """Evidence Analyst with non-empty candidates must not silently
+    convert an empty model response into NOOP."""
+
+    # ── Test 1: empty model output fails closed ──
+    def test_empty_model_output_fails_closed(self):
+        from agency.roles import EvidenceAnalystRole
+        from agency.model_client import RoleModelAdapter, DeepSeekClient
+
+        model_calls = 0
+
+        class _Tx:
+            def __call__(self, payload):
+                nonlocal model_calls
+                model_calls += 1
+                # Return no choices — triggers error_kind="empty"
+                return {"choices": [],
+                        "usage": {"prompt_tokens": 300, "completion_tokens": 21,
+                                  "total_tokens": 321}}
+
+        client = DeepSeekClient(transport=_Tx())
+        schema = {"type": "object", "properties": {"accepted": {"type": "array"}}}
+        adapter = RoleModelAdapter(client, "deepseek-v4-flash",
+                                   "You extract claims.", schema)
+        role = EvidenceAnalystRole(adapter=adapter)
+        result = role({"source_candidates": [
+            {"id": "src-1", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "Evidence text."},
+        ]})
+
+        assert model_calls == 2, f"Expected 2 model calls (1 + retry), got {model_calls}"
+        assert result.status == "FAIL_CLOSED", f"Expected FAIL_CLOSED, got {result.status}"
+        assert "Empty response" in result.fail_reason
+        # Token estimate may be from last call (321) on retry
+
+    # ── Test 2: orchestrator stops before Director ──
+    def test_orchestrator_stops_before_director(self):
+        """Empty EA response → failed status, incident, Director never called."""
+        sha = _make_sha("ea-nodir")
+        call_log = []
+
+        class _Tx:
+            def __call__(self, payload):
+                call_log.append(payload.get("model", ""))
+                msgs = payload.get("messages", [])
+                sys = msgs[0]["content"] if msgs else ""
+                # Evidence Analyst — empty response
+                if "extract claims" in sys.lower() or "classify" in sys.lower():
+                    return {"choices": [],
+                            "usage": {"prompt_tokens": 300, "completion_tokens": 21,
+                                      "total_tokens": 321}}
+                # Director (should never be reached)
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+
+        class _R:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [
+                    {"id": "src-1", "content": "Evidence text.",
+                     "author": {"name": "vantik"}},
+                ]}
+
+        class _P(RepoStateProvider):
+            def __init__(self, s): self.s = s
+            def current_sha(self): return self.s
+            def origin_main_sha(self): return self.s
+
+        reg = build_role_registry(client=client, moltbook_reader=_R())
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(sha),
+            role_registry=reg, campaign={"active_inquiry": "t",
+            "objective": "Test", "internal_author_handles": ["hermes-sankhya-25"]})
+        orch.ctx.set_evidence_index(set())
+        ctx = orch.run()
+
+        assert ctx.status == "failed"
+        assert len(ctx.incidents) >= 1
+        inc_text = " ".join(i["description"].lower() for i in ctx.incidents)
+        assert "evidence_analyst" in inc_text
+        assert "empty response" in inc_text, f"Incident: {ctx.incidents}"
+        assert len(ctx.accepted_evidence) == 0
+        pro_calls = [m for m in call_log if "pro" in m.lower()]
+        assert len(pro_calls) == 0, f"Director should not be called, got {len(pro_calls)} pro calls"
+        assert len(ctx.decisions) == 0
+        assert len(ctx.transactions) == 0
+
+    # ── Test 3: legitimate no-input NOOP remains ──
+    def test_legitimate_noop_remains(self):
+        from agency.roles import EvidenceAnalystRole
+        from agency.model_client import RoleModelAdapter, DeepSeekClient
+
+        model_calls = 0
+
+        class _Tx:
+            def __call__(self, payload):
+                nonlocal model_calls
+                model_calls += 1
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+
+        client = DeepSeekClient(transport=_Tx())
+        schema = {"type": "object", "properties": {"accepted": {"type": "array"}}}
+        adapter = RoleModelAdapter(client, "deepseek-v4-flash",
+                                   "You extract claims.", schema)
+        role = EvidenceAnalystRole(adapter=adapter)
+        result = role({"source_candidates": []})
+
+        assert result.status == "NOOP", f"Expected NOOP, got {result.status}"
+        assert model_calls == 0, f"Expected 0 model calls, got {model_calls}"
