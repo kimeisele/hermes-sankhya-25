@@ -99,15 +99,16 @@ def _segment_spans(source_id: str, source_content_hash: str,
 
     paragraphs = raw_content.split("\n\n")
     for pi, para in enumerate(paragraphs):
-        if pi > 0:
-            para = "\n\n" + para
-
         # Split paragraph into sentences
         units = _split_sentences(para)
 
-        for unit in units:
+        for ui, unit in enumerate(units):
             if not unit:
                 continue
+            # Append paragraph separator to the last unit of this paragraph
+            # (not the first unit of the next paragraph)
+            if ui == len(units) - 1 and pi < len(paragraphs) - 1:
+                unit = unit + "\n\n"
             _emit_unit(source_id, source_content_hash, unit,
                        spans, span_index)
             span_index = len(spans)

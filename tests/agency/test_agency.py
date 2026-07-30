@@ -1387,6 +1387,15 @@ class TestSourceFidelity:
         assert "".join(s.text for s in spans) == raw
         assert all(len(s.text) <= 1000 for s in spans)
 
+    def test_paragraph_separator_on_previous_span(self):
+        """\\n\\n belongs to the end of the previous paragraph, not the next."""
+        from agency.context import _segment_spans
+        raw = "First sentence.\n\nSecond sentence."
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "First sentence.\n\n"
+        assert spans[1].text == "Second sentence."
+        assert "".join(s.text for s in spans) == raw
+
     def test_markdown_bold_preserved_in_span(self):
         """Markdown **bold** markers survive segmentation unchanged."""
         from agency.context import _segment_spans
@@ -1549,10 +1558,13 @@ class TestSourceFidelity:
         ev = next(e for e in ctx.accepted_evidence if e["claim_id"] == "c1")
         assert "**Permission escalation patterns.**" in ev["claim_text"]
 
-        # Injected quote matches raw source substring exactly
+        # Injected quote is exactly the stored claim_text
         f1 = ctx.decisions[0]["synthesis"]["findings"][0]
         injected = f1["source_quotes"][0]["quote"]
-        assert injected in raw
+        assert injected == ev["claim_text"], (
+            "Injected quote must equal claim_text exactly")
+        assert ev["claim_text"] == claim_text, (
+            "Stored claim_text must equal the exact canonical claim")
         assert "**" in injected
 
         # No provenance incidents
@@ -1578,7 +1590,7 @@ class TestSourceFidelity:
         assert full.count("Hello world.") == 1
 
     def test_ea_view_excludes_raw_content_and_content_excerpt(self):
-        """EA view must not expose raw_content or content_excerpt."""
+        """EA view must not expose raw_content or content_excerpt anywhere."""
         sha = _make_sha("eav2")
         ctx = AgencyContextV1(base_sha=sha)
         ctx.set_source_candidates([{"id": "s1", "url": "", "author_handle": "a",
@@ -1586,10 +1598,20 @@ class TestSourceFidelity:
                                      "content_excerpt": "Hello."}])
         ctx.set_raw_source("s1", "", "a", "comment", "Hello.")
         view = ctx.view_for("evidence_analyst")
-        src = view["sources"][0]
-        assert "raw_content" not in src
-        assert "content_excerpt" not in src
-        assert "source_content_hash" not in src
+
+        _FORBIDDEN = ("source_candidates", "raw_content", "content_excerpt",
+                      "source_content_hash")
+        # Top-level view
+        for key in _FORBIDDEN:
+            assert key not in view, f"EA view must not contain {key}"
+        # Each source
+        for src in view["sources"]:
+            for key in _FORBIDDEN:
+                assert key not in src, f"EA source must not contain {key}"
+            # Each span
+            for span in src.get("spans", []):
+                for key in _FORBIDDEN:
+                    assert key not in span, f"EA span must not contain {key}"
 
     def test_director_view_excludes_internal_fields(self):
         """Director view accepted_evidence excludes source_content_hash, span_ids."""
