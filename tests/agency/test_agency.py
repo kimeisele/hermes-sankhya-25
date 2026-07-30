@@ -999,14 +999,43 @@ class TestDeterministicIngestion:
 # ---------------------------------------------------------------------------
 
 class TestDirectorSynthesis:
-    """Director produces structured synthesis when READY_FOR_SYNTHESIS."""
+    """Director produces structured synthesis on READY_FOR_SYNTHESIS.
+    Any disposition carrying a synthesis must pass provenance validation."""
 
-    def test_synthesis_stored_and_rendered(self):
-        """Full pipeline: synthesis survives CTX and HQ Markdown."""
-        sha = _make_sha("syn-int")
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
 
-        call_log: list[dict] = []
-        accepted_src = "src-abc-123"
+    @staticmethod
+    def _make_evidence_response(accepted: list[dict]) -> dict:
+        return {"choices": [{"message": {"content": json.dumps({
+            "accepted": accepted,
+            "rejected": [], "claims": [],
+            "scores": {}, "rationale": "ok",
+        })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                      "total_tokens": 15}}
+
+    @staticmethod
+    def _make_director_response(disposition: str, synthesis: dict | None = None) -> dict:
+        base = {
+            "decision_id": "d1",
+            "disposition": disposition,
+            "director_run_id": "r1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "rationale": "Director rationale.",
+        }
+        if synthesis is not None:
+            base["synthesis"] = synthesis
+        return {"choices": [{"message": {"content": json.dumps(base)}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                          "total_tokens": 15}}
+
+    @staticmethod
+    def _run(call_log: list, director_resp: dict, evidence_accepted: list[dict],
+             reader_ids: list[str] | None = None):
+        from agency.model_client import DeepSeekClient
+        if reader_ids is None:
+            reader_ids = [e["source_id"] for e in evidence_accepted]
 
         class _Tx:
             def __call__(self, payload):
@@ -1014,59 +1043,117 @@ class TestDirectorSynthesis:
                 sys = msgs[0]["content"] if msgs else ""
                 call_log.append({"model": payload.get("model", ""),
                                  "system": sys[:60]})
-                # Evidence Analyst
                 if "extract claims" in sys.lower() or "classify" in sys.lower():
-                    return {"choices": [{"message": {"content": json.dumps({
-                        "accepted": [{"source_id": accepted_src, "claim_id": "c1"}],
-                        "rejected": [], "claims": [],
-                        "scores": {}, "rationale": "ok",
-                    })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
-                                  "total_tokens": 15}}
-                # Director (pro model)
-                return {"choices": [{"message": {"content": json.dumps({
-                    "decision_id": "d1", "disposition": "READY_FOR_SYNTHESIS",
-                    "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
-                    "rationale": "Evidence sufficient for synthesis.",
-                    "synthesis": {
-                        "inquiry": "What is the answer?",
-                        "executive_answer": "The answer is 42.",
-                        "findings": [{
-                            "finding_id": "f1",
-                            "statement": "Answer found.",
-                            "source_ids": [accepted_src],
-                            "confidence": "supported",
-                            "reasoning": "Evidence confirms.",
-                        }],
-                        "unresolved_questions": ["How to verify?"],
-                        "next_inquiry": "Test next question.",
-                    },
-                })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
-                              "total_tokens": 15}}
+                    return TestDirectorSynthesis._make_evidence_response(
+                        evidence_accepted)
+                return director_resp
 
-        from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
 
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+                return {"post": {"id": pid, "content": "post",
+                                 "author": {"name": "op"}}}
             def fetch_comments(self, pid):
-                return {"comments": [{"id": accepted_src, "content": "evidence",
-                         "author": {"name": "ext"}}]}
+                return {"comments": [
+                    {"id": sid, "content": "evidence",
+                     "author": {"name": "ext"}} for sid in reader_ids
+                ]}
 
         class _P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
+            def __init__(self, s):
+                self.s = s
+            def current_sha(self): return self.s
+            def origin_main_sha(self): return self.s
 
+        sha = _make_sha("syn-gen")
         reg = build_role_registry(client=client, moltbook_reader=_R())
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(), role_registry=reg,
-            campaign={"active_inquiry": "t", "objective": "T"})
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(sha),
+                                  role_registry=reg,
+                                  campaign={"active_inquiry": "t",
+                                            "objective": "T"})
         orch.ctx.set_evidence_index(set())
-        ctx = orch.run()
+        return orch.run()
 
-        # Run completes
+    # ------------------------------------------------------------------
+    # 1. Full rendering — no truncation
+    # ------------------------------------------------------------------
+
+    def test_full_synthesis_rendered_without_truncation(self):
+        """Long statement, long reasoning, 6+ source IDs all survive."""
+        call_log: list[dict] = []
+
+        long_statement = ("This statement is intentionally longer than one "
+                          "hundred and twenty characters to prove that no "
+                          "truncation occurs at the old 120-char boundary. "
+                          "SENTINEL-STAT-END")
+        long_reasoning = ("This reasoning text is intentionally longer "
+                          "than two hundred characters to prove that the "
+                          "old 200-character truncation has been removed. "
+                          "It continues past the former boundary with more "
+                          "detail and ends at this exact sentinel: "
+                          "SENTINEL-REASON-END")
+
+        src_ids = [f"src-{i:02d}" for i in range(1, 8)]  # 7 source IDs
+        evidence = [{"source_id": sid, "claim_id": "c1"}
+                    for sid in src_ids]
+
+        director_resp = self._make_director_response("READY_FOR_SYNTHESIS", {
+            "inquiry": "Q",
+            "executive_answer": "A",
+            "findings": [{
+                "finding_id": "f1",
+                "statement": long_statement,
+                "source_ids": src_ids,
+                "confidence": "supported",
+                "reasoning": long_reasoning,
+            }],
+            "unresolved_questions": [],
+            "next_inquiry": "N",
+        })
+
+        ctx = self._run(call_log, director_resp, evidence, reader_ids=src_ids)
         assert ctx.status == "completed"
 
-        # Full Director decision stored — includes synthesis
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+
+        # No truncation — full statement, full reasoning, all source IDs
+        assert long_statement in report, "full statement must appear"
+        assert long_reasoning in report, "full reasoning must appear"
+        for sid in src_ids:
+            assert sid in report, f"source_id {sid} must appear"
+        # Sentinel strings near the end confirm no truncation
+        assert "SENTINEL-STAT-END" in report
+        assert "SENTINEL-REASON-END" in report
+
+    # ------------------------------------------------------------------
+    # 2. READY_FOR_SYNTHESIS with valid provenance (existing, kept)
+    # ------------------------------------------------------------------
+
+    def test_synthesis_stored_and_rendered(self):
+        """Full pipeline: synthesis survives CTX and HQ Markdown."""
+        call_log: list[dict] = []
+        accepted_src = "src-abc-123"
+        evidence = [{"source_id": accepted_src, "claim_id": "c1"}]
+
+        director_resp = self._make_director_response("READY_FOR_SYNTHESIS", {
+            "inquiry": "What is the answer?",
+            "executive_answer": "The answer is 42.",
+            "findings": [{
+                "finding_id": "f1",
+                "statement": "Answer found.",
+                "source_ids": [accepted_src],
+                "confidence": "supported",
+                "reasoning": "Evidence confirms.",
+            }],
+            "unresolved_questions": ["How to verify?"],
+            "next_inquiry": "Test next question.",
+        })
+
+        ctx = self._run(call_log, director_resp, evidence)
+        assert ctx.status == "completed"
+
         assert len(ctx.decisions) == 1
         dec = ctx.decisions[0]
         assert dec["disposition"] == "READY_FOR_SYNTHESIS"
@@ -1077,7 +1164,6 @@ class TestDirectorSynthesis:
         assert len(syn["findings"]) == 1
         assert syn["findings"][0]["source_ids"] == [accepted_src]
 
-        # HQ Markdown contains synthesis section
         d = ctx.to_dict(sanitize=True)
         report = render_hq_markdown(d)
         assert "## Research Synthesis" in report
@@ -1091,68 +1177,84 @@ class TestDirectorSynthesis:
         assert len(flash_models) == 1, f"Expected 1 flash call, got {len(flash_models)}"
         assert len(pro_models) == 1, f"Expected 1 pro call, got {len(pro_models)}"
 
-        # Clean
         assert len(ctx.transactions) == 0
         assert len(ctx.incidents) == 0
 
+    # ------------------------------------------------------------------
+    # 3. READY_FOR_SYNTHESIS with fake source_id → FAIL_CLOSED
+    # ------------------------------------------------------------------
+
     def test_invalid_source_id_fails_closed(self):
-        """Unknown source_id in synthesis → FAIL_CLOSED."""
-        sha = _make_sha("syn-bad")
+        """Unknown source_id in synthesis → FAIL_CLOSED, decision not stored."""
+        call_log: list[dict] = []
+        evidence = [{"source_id": "real-src", "claim_id": "c1"}]
 
-        class _Tx:
-            def __call__(self, payload):
-                msgs = payload.get("messages", [])
-                sys = msgs[0]["content"] if msgs else ""
-                if "extract claims" in sys.lower() or "classify" in sys.lower():
-                    return {"choices": [{"message": {"content": json.dumps({
-                        "accepted": [{"source_id": "real-src", "claim_id": "c1"}],
-                        "rejected": [], "claims": [], "scores": {},
-                        "rationale": "ok",
-                    })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1,
-                                  "total_tokens": 2}}
-                return {"choices": [{"message": {"content": json.dumps({
-                    "decision_id": "d1", "disposition": "READY_FOR_SYNTHESIS",
-                    "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
-                    "rationale": "x",
-                    "synthesis": {
-                        "inquiry": "Q",
-                        "executive_answer": "A",
-                        "findings": [{
-                            "finding_id": "f1",
-                            "statement": "S",
-                            "source_ids": ["FAKE-NONEXISTENT-SRC"],
-                            "confidence": "supported",
-                            "reasoning": "R",
-                        }],
-                        "unresolved_questions": [],
-                        "next_inquiry": "N",
-                    },
-                })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1,
-                              "total_tokens": 2}}
+        director_resp = self._make_director_response("READY_FOR_SYNTHESIS", {
+            "inquiry": "Q",
+            "executive_answer": "A",
+            "findings": [{
+                "finding_id": "f1",
+                "statement": "S",
+                "source_ids": ["FAKE-NONEXISTENT-SRC"],
+                "confidence": "supported",
+                "reasoning": "R",
+            }],
+            "unresolved_questions": [],
+            "next_inquiry": "N",
+        })
 
-        from agency.model_client import DeepSeekClient
-        client = DeepSeekClient(transport=_Tx())
-
-        class _R:
-            def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
-            def fetch_comments(self, pid):
-                return {"comments": [{"id": "real-src", "content": "x",
-                         "author": {"name": "ext"}}]}
-
-        class _P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-
-        reg = build_role_registry(client=client, moltbook_reader=_R())
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(), role_registry=reg,
-            campaign={"active_inquiry": "t", "objective": "T"})
-        orch.ctx.set_evidence_index(set())
-        ctx = orch.run()
-
-        # Must fail closed
+        ctx = self._run(call_log, director_resp, evidence)
         assert ctx.status == "failed"
         assert len(ctx.incidents) >= 1
         assert any("unknown source_id" in inc["description"].lower()
                    for inc in ctx.incidents)
         assert "FAKE-NONEXISTENT" in ctx.incidents[0]["description"]
+
+        # Invalid decision must NOT be stored
+        assert len(ctx.decisions) == 0, (
+            "Invalid decision with fake source_id must not be stored")
+
+        # Rendered HQ must NOT contain Research Synthesis
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert "## Research Synthesis" not in report
+
+    # ------------------------------------------------------------------
+    # 4. RECORD_ONLY with fake source_id → FAIL_CLOSED (non-READY)
+    # ------------------------------------------------------------------
+
+    def test_record_only_with_bad_synthesis_fails_closed(self):
+        """RECORD_ONLY disposition carrying a synthesis with invalid
+        source_ids must also fail closed — provenance enforcement is
+        universal, not restricted to READY_FOR_SYNTHESIS."""
+        call_log: list[dict] = []
+        evidence = [{"source_id": "real-src", "claim_id": "c1"}]
+
+        director_resp = self._make_director_response("RECORD_ONLY", {
+            "inquiry": "Q",
+            "executive_answer": "A",
+            "findings": [{
+                "finding_id": "f1",
+                "statement": "S",
+                "source_ids": ["FAKE-NONEXISTENT-SRC"],
+                "confidence": "supported",
+                "reasoning": "R",
+            }],
+            "unresolved_questions": [],
+            "next_inquiry": "N",
+        })
+
+        ctx = self._run(call_log, director_resp, evidence)
+        assert ctx.status == "failed"
+        assert len(ctx.incidents) >= 1
+        assert any("unknown source_id" in inc["description"].lower()
+                   for inc in ctx.incidents)
+        assert "FAKE-NONEXISTENT" in ctx.incidents[0]["description"]
+
+        # Invalid decision must NOT be stored
+        assert len(ctx.decisions) == 0
+
+        # Rendered HQ must NOT contain Research Synthesis
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert "## Research Synthesis" not in report

@@ -66,11 +66,11 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
             for f in findings:
                 if isinstance(f, dict):
                     lines.append(f"- **{f.get('finding_id', '?')}** — "
-                                 f"{f.get('statement', '')[:120]}")
+                                 f"{f.get('statement', '')}")
                     srcs = f.get("source_ids", [])
-                    lines.append(f"  - Sources: {', '.join(srcs[:5])}")
+                    lines.append(f"  - Sources: {', '.join(srcs)}")
                     lines.append(f"  - Confidence: {f.get('confidence', '?')}")
-                    lines.append(f"  - Reasoning: {f.get('reasoning', '')[:200]}")
+                    lines.append(f"  - Reasoning: {f.get('reasoning', '')}")
                     lines.append("")
         questions = synthesis.get("unresolved_questions", [])
         if questions:

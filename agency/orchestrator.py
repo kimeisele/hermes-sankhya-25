@@ -225,8 +225,9 @@ class AgencyOrchestrator:
             return "NOOP"
 
         # Validate synthesis provenance against accepted evidence
+        # Applies to every disposition — any synthesis must reference valid source_ids.
         synthesis = director_data.get("synthesis")
-        if synthesis and disposition == "READY_FOR_SYNTHESIS":
+        if synthesis:
             accepted_ids: set[str] = set()
             for ev in self.ctx.accepted_evidence:
                 sid = ev.get("source_id", "")
