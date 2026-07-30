@@ -107,7 +107,13 @@ def build_role_registry(client: DeepSeekClient | None = None,
             "independent confirmation. Never convert a question or warning into "
             "a requirement. Never invent a solution. Never recommend "
             "implementation work. Never select the next inquiry. Unresolved "
-            "questions must describe missing evidence, not prescribe action."),
+            "questions must describe missing evidence, not prescribe action. "
+            "Set each finding_kind to the exact claim_kind shared by every quoted "
+            "claim. A finding may quote only claims with one shared claim_kind. "
+            "The research objective controls relevance, not source modality. "
+            "Do not infer a proposal from an assertion or opinion. If evidence "
+            "of different kinds is relevant, emit separate findings. Use unknown "
+            "only for claims classified as unknown."),
                                        _model_schema, is_write_critical=True)
         # Separate Director adapter with thinking disabled.
         # pro_adapter remains provider-default for Auditor use.
