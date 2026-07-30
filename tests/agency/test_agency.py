@@ -1258,3 +1258,98 @@ class TestDirectorSynthesis:
         d = ctx.to_dict(sanitize=True)
         report = render_hq_markdown(d)
         assert "## Research Synthesis" not in report
+
+
+# ---------------------------------------------------------------------------
+# Director FAIL_CLOSED incident registration
+# ---------------------------------------------------------------------------
+
+class TestDirectorFailClosed:
+    """Director FAIL_CLOSED must record an incident with role and reason."""
+
+    def test_director_timeout_records_incident(self):
+        """Director timeout → incident, no decision stored, evidence survives."""
+        sha = _make_sha("dir-fail")
+
+        accepted_src = "src-dir-fail-001"
+        raw_error = "DeepSeek timeout after 60s"
+
+        class _Tx:
+            call_count = 0
+            def __call__(self, payload):
+                _Tx.call_count += 1
+                # Evidence Analyst (call 1) — succeeds
+                if _Tx.call_count == 1:
+                    return {"choices": [{"message": {"content": json.dumps({
+                        "accepted": [{"source_id": accepted_src,
+                                      "author_handle": "vantik",
+                                      "content_excerpt": "receipt evidence"}],
+                        "rejected": [], "claims": [],
+                        "scores": {}, "rationale": "ok",
+                    })}}], "usage": {"prompt_tokens": 50, "completion_tokens": 30,
+                                  "total_tokens": 80}}
+                # Director (call 2) — times out
+                raise RuntimeError(raw_error)
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+
+        class _R:
+            def fetch_post(self, pid):
+                return {"post": {"id": pid, "content": "post",
+                                 "author": {"name": "op"}}}
+            def fetch_comments(self, pid):
+                return {"comments": [{"id": accepted_src,
+                         "content": "receipt evidence",
+                         "author": {"name": "vantik"}}]}
+
+        class _P(RepoStateProvider):
+            def __init__(self, s):
+                self.s = s
+            def current_sha(self): return self.s
+            def origin_main_sha(self): return self.s
+
+        reg = build_role_registry(client=client, moltbook_reader=_R())
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(sha),
+                                  role_registry=reg,
+                                  campaign={"active_inquiry": "t",
+                                            "objective": "T"})
+        orch.ctx.set_evidence_index(set())
+        ctx = orch.run()
+
+        # 1. Final status is failed
+        assert ctx.status == "failed"
+
+        # 2. Exactly one incident recorded
+        assert len(ctx.incidents) == 1
+        inc = ctx.incidents[0]
+
+        # 3. Incident names the role and the raw error
+        assert "agency_director" in inc["description"]
+        assert raw_error in inc["description"]
+        assert inc["severity"] == "high"
+
+        # 4. No Director decision stored
+        assert len(ctx.decisions) == 0
+
+        # 5. Accepted evidence from Evidence Analyst remains in CTX
+        assert len(ctx.accepted_evidence) == 1
+        assert ctx.accepted_evidence[0]["source_id"] == accepted_src
+
+        # 6. HQ Markdown contains ## Incidents section
+        d = ctx.to_dict(sanitize=True)
+        report = render_hq_markdown(d)
+        assert "## Incidents" in report
+
+        # 7. HQ Markdown contains the raw error text
+        assert raw_error in report
+
+        # 8. HQ Markdown contains accepted-evidence section
+        assert "## Accepted Evidence" in report
+        assert accepted_src[:12] in report
+
+        # 9. No Research Synthesis section
+        assert "## Research Synthesis" not in report
+
+        # 10. Transactions remain empty
+        assert len(ctx.transactions) == 0

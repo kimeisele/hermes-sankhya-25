@@ -213,6 +213,9 @@ class AgencyOrchestrator:
     def _director_review(self) -> str:
         result = self._safe_invoke("agency_director")
         if result.status == "FAIL_CLOSED":
+            self.ctx.record_incident(
+                f"Role agency_director FAIL_CLOSED: {result.fail_reason}",
+                severity="high")
             self.ctx.close("failed")
             return "NOOP"
 
