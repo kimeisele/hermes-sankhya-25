@@ -263,12 +263,14 @@ _OBJECTIVE = "What claims and proposals appear in the discussion?"
 
 
 def _ev_resp(accepted_list, rejected=None):
+    """Accepted items must use span_ids format (no claim_text)."""
     return {"choices": [{"message": {"content": json.dumps({
         "accepted": accepted_list, "rejected": rejected or [],
     })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
 
 
 def _dir_resp(disposition, synthesis=None):
+    """Director response — synthesis source_quotes must NOT contain quote."""
     base = {"decision_id": "d1", "disposition": disposition,
             "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
             "rationale": "test"}
@@ -284,7 +286,13 @@ def _make_epi_canonical(sid, author, excerpt):
             "untrusted": True, "content_excerpt": excerpt}
 
 
+def _ea_span_ids(source_id, count=1):
+    """Build span_ids list for a source — each source has one span 'span/0'."""
+    return [f"{source_id}/span/{i}" for i in range(count)]
+
+
 def _make_finding(fid, statement, src_ids, kind, quotes, reasoning="R"):
+    """quotes is a list of {source_id, claim_id} — NO quote field (code injects)."""
     return {"finding_id": fid, "statement": statement,
             "source_ids": src_ids, "finding_kind": kind,
             "source_quotes": quotes, "reasoning": reasoning}
@@ -292,6 +300,11 @@ def _make_finding(fid, statement, src_ids, kind, quotes, reasoning="R"):
 
 def _run_epi(evidence_accepted, director_resp, canonical_items,
              call_log=None, internal_handles=None):
+    """Run epistemic test with span-based EA output.
+
+    evidence_accepted items must use span_ids (not claim_text).
+    Director source_quotes must NOT contain quote.
+    """
     from agency.model_client import DeepSeekClient
     if call_log is None:
         call_log = []
@@ -377,7 +390,7 @@ class TestEpistemicHardening:
         real_author = "vantik"
         real_excerpt = "REAL EXCERPT from vantik."
         canonical = [_make_epi_canonical(sid, real_author, real_excerpt)]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "Model text"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid)}]
         ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
         assert ctx.status == "completed"
         ev = next(e for e in ctx.accepted_evidence if e["source_id"] == sid)
@@ -388,7 +401,7 @@ class TestEpistemicHardening:
     # ── B: unknown accepted source + Director not called ──
     def test_b_unknown_accepted_source(self):
         call_log = []
-        evidence = [{"source_id": "FAKE-SRC", "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"}]
+        evidence = [{"source_id": "FAKE-SRC", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["FAKE-SRC/span/0"]}]
         canonical = [_make_epi_canonical("real-src", "vantik", "real")]
         ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical, call_log=call_log)
         assert ctx.status == "failed"
@@ -404,7 +417,7 @@ class TestEpistemicHardening:
     def test_c_inquiry_mismatch_fails_closed(self):
         sid = "src-c"
         canonical = [_make_epi_canonical(sid, "vantik", "text.")]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid)}]
         syn = {"inquiry": "fd2c8049-5a16-417b-ab5d-8400a80d3ca7",
                "executive_answer": "A", "findings": [], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
@@ -416,9 +429,9 @@ class TestEpistemicHardening:
     def test_d_question_to_assertion_fails(self):
         sid = "src-q"
         canonical = [_make_epi_canonical(sid, "hermes-sankhya-25", "Should we bind the receipt?")]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "question", "claim_text": "Q"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "question", "span_ids": _ea_span_ids(sid)}]
         f = _make_finding("f1", "Binding is required.", [sid], "assertion",  # finding_kind=assertion
-            [{"source_id": sid, "claim_id": "c1", "quote": "Should we bind"}])
+            [{"source_id": sid, "claim_id": "c1"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
@@ -431,11 +444,11 @@ class TestEpistemicHardening:
         sid1, sid2 = "src-a", "src-q"
         canonical = [_make_epi_canonical(sid1, "vantik", "Commit hash is essential."),
                      _make_epi_canonical(sid2, "vantik", "Should receipts be universal?")]
-        evidence = [{"source_id": sid1, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "A"},
-                    {"source_id": sid2, "claim_id": "c2", "claim_kind": "question", "claim_text": "Q"}]
+        evidence = [{"source_id": sid1, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid1)},
+                    {"source_id": sid2, "claim_id": "c2", "claim_kind": "question", "span_ids": _ea_span_ids(sid2)}]
         f = _make_finding("f1", "Mixed finding.", [sid1, sid2], "assertion",
-            [{"source_id": sid1, "claim_id": "c1", "quote": "Commit hash"},
-             {"source_id": sid2, "claim_id": "c2", "quote": "Should receipts be"}])
+            [{"source_id": sid1, "claim_id": "c1"},
+             {"source_id": sid2, "claim_id": "c2"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
@@ -452,7 +465,7 @@ class TestEpistemicHardening:
         canonical = {"id": sid, "url": f"https://m.example/{sid}",
                       "author_handle": "", "content_type": "comment",
                       "untrusted": True, "content_excerpt": "text."}
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid)}]
         ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), [canonical])
         assert ctx.status == "completed"
         ev = next(e for e in ctx.accepted_evidence if e["source_id"] == sid)
@@ -470,12 +483,12 @@ class TestEpistemicHardening:
              "untrusted": True, "content_excerpt": "external text."},
         ]
         evidence = [
-            {"source_id": sid_u, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "U"},
-            {"source_id": sid_e, "claim_id": "c2", "claim_kind": "assertion", "claim_text": "E"},
+            {"source_id": sid_u, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid_u)},
+            {"source_id": sid_e, "claim_id": "c2", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid_e)},
         ]
         f = _make_finding("f1", "Mix.", [sid_u, sid_e], "assertion",
-            [{"source_id": sid_u, "claim_id": "c1", "quote": "unknown text"},
-             {"source_id": sid_e, "claim_id": "c2", "quote": "external text"}])
+            [{"source_id": sid_u, "claim_id": "c1"},
+             {"source_id": sid_e, "claim_id": "c2"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
@@ -489,9 +502,9 @@ class TestEpistemicHardening:
         sid = "src-long"
         long_quote = "AAAA" + ("X" * 250) + "SENTINEL-LONG-END"
         canonical = [_make_epi_canonical(sid, "vantik", long_quote)]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "L"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid)}]
         f = _make_finding("f1", "Long test.", [sid], "assertion",
-            [{"source_id": sid, "claim_id": "c1", "quote": long_quote}])
+            [{"source_id": sid, "claim_id": "c1"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
@@ -504,9 +517,9 @@ class TestEpistemicHardening:
     def test_h_enriched_decision_validates_against_schema(self):
         sid = "src-h"
         canonical = [_make_epi_canonical(sid, "vantik", "Enriched schema test text.")]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "H"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid)}]
         f = _make_finding("f1", "Schema validated.", [sid], "assertion",
-            [{"source_id": sid, "claim_id": "c1", "quote": "Enriched schema test text"}])
+            [{"source_id": sid, "claim_id": "c1"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
@@ -517,18 +530,24 @@ class TestEpistemicHardening:
         import jsonschema as _js
         _js.validate(instance=ctx.decisions[0], schema=dec_schema)
 
-    # ── I: bad quote fails closed ──
+    # ── I: Director-supplied quote rejected ──
     def test_i_bad_quote_fails(self):
         sid = "src-i"
         canonical = [_make_epi_canonical(sid, "vantik", "exact canonical text here.")]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "I"}]
-        f = _make_finding("f1", "Bad.", [sid], "assertion",
-            [{"source_id": sid, "claim_id": "c1", "quote": "NOT IN EXCERPT"}])
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(sid)}]
+        # Director provides its own quote — must be rejected
+        f = {"finding_id": "f1", "statement": "Bad.", "source_ids": [sid],
+             "finding_kind": "assertion", "reasoning": "R",
+             "source_quotes": [{"source_id": sid, "claim_id": "c1", "quote": "DIRECTOR WROTE THIS"}]}
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
         assert ctx.status == "failed"
         assert len(ctx.incidents) >= 1
+        assert any("agency_director" in i["description"] and
+                   ("quote" in i["description"].lower() or
+                    "additional" in i["description"].lower())
+                   for i in ctx.incidents), f"Expected Director quote rejection, got: {ctx.incidents}"
 
     # ── J: successful mixed synthesis, all same kind ──
     def test_j_successful_mixed_synthesis(self):
@@ -542,16 +561,16 @@ class TestEpistemicHardening:
             _make_epi_canonical(s_e2, "contributor_b", e2e),
         ]
         evidence = [
-            {"source_id": s_int, "claim_id": "c-int", "claim_kind": "assertion", "claim_text": "IA"},
-            {"source_id": s_e1, "claim_id": "c-e1", "claim_kind": "assertion", "claim_text": "EA1"},
-            {"source_id": s_e2, "claim_id": "c-e2", "claim_kind": "assertion", "claim_text": "EA2"},
+            {"source_id": s_int, "claim_id": "c-int", "claim_kind": "assertion", "span_ids": _ea_span_ids(s_int)},
+            {"source_id": s_e1, "claim_id": "c-e1", "claim_kind": "assertion", "span_ids": _ea_span_ids(s_e1)},
+            {"source_id": s_e2, "claim_id": "c-e2", "claim_kind": "assertion", "span_ids": _ea_span_ids(s_e2)},
         ]
         call_log = []
         f = _make_finding("f1", "Receipt fields and binding.", [s_e1, s_e2, s_int],
             "assertion",
-            [{"source_id": s_e1, "claim_id": "c-e1", "quote": "commit_hash and timestamp"},
-             {"source_id": s_e2, "claim_id": "c-e2", "quote": "test_run_id with pass/fail counts"},
-             {"source_id": s_int, "claim_id": "c-int", "quote": "what binds the receipt to work"}])
+            [{"source_id": s_e1, "claim_id": "c-e1"},
+             {"source_id": s_e2, "claim_id": "c-e2"},
+             {"source_id": s_int, "claim_id": "c-int"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "Receipt fields proposed.",
                "findings": [f], "unresolved_questions": ["What binds receipt?"]}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical, call_log=call_log)
@@ -621,10 +640,8 @@ class TestEvidenceLifecycle:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": sentinel}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True, "content_excerpt": sentinel,
-            "content_type": "comment"}])
+                             "content_excerpt": sentinel,
+                             "raw_content": sentinel}])
         ctx = orch.run()
         assert ctx.status == "completed"
         assert len(ctx.accepted_evidence) >= 1
@@ -644,10 +661,8 @@ class TestEvidenceLifecycle:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": "Valid evidence content."}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True,
-            "content_excerpt": "Valid evidence content.", "content_type": "comment"}])
+                             "content_excerpt": "Valid evidence content.",
+                             "raw_content": "Valid evidence content."}])
         ctx = orch.run()
         assert len(ctx.accepted_evidence) >= 1
         assert ctx.decisions[0]["disposition"] == "RECORD_ONLY"
@@ -664,10 +679,8 @@ class TestEvidenceLifecycleOriginal:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": "test content."}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True,
-            "content_excerpt": "test content.", "content_type": "comment"}])
+                             "content_excerpt": "test content.",
+                             "raw_content": "test content."}])
         ctx = orch.run()
         assert ctx.status == "completed"
 
@@ -681,10 +694,8 @@ class TestEvidenceLifecycleOriginal:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": "Valid evidence."}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True,
-            "content_excerpt": "Valid evidence.", "content_type": "comment"}])
+                             "content_excerpt": "Valid evidence.",
+                             "raw_content": "Valid evidence."}])
         ctx = orch.run()
         assert len(ctx.decisions) > 0
         assert ctx.decisions[0]["disposition"] != "NOOP"
@@ -707,7 +718,7 @@ class TestFakeDeepSeekE2E:
                         "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
                 return {"choices": [{"message": {"content": json.dumps({
                     "accepted": [{"source_id": "new-claim-1", "claim_id": "c1",
-                     "claim_kind": "assertion", "claim_text": "commit_hash is essential"}],
+                     "claim_kind": "assertion", "span_ids": ["new-claim-1/span/0"]}],
                     "rejected": []})}}],
                     "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
         from agency.model_client import DeepSeekClient
@@ -788,10 +799,10 @@ class TestDirectorSynthesis:
         call_log = []
         accepted_src = "src-syn"
         canonical = [_make_epi_canonical(accepted_src, "vantik", "evidence text for " + accepted_src)]
-        evidence = [{"source_id": accepted_src, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "S"}]
+        evidence = [{"source_id": accepted_src, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(accepted_src)}]
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "The answer is 42.",
                "findings": [_make_finding("f1", "Answer found.", [accepted_src], "assertion",
-                   [{"source_id": accepted_src, "claim_id": "c1", "quote": "evidence text for " + accepted_src}])],
+                   [{"source_id": accepted_src, "claim_id": "c1"}])],
                "unresolved_questions": ["Q?"]}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical, call_log=call_log)
         assert ctx.status == "completed"
@@ -812,10 +823,10 @@ class TestDirectorSynthesis:
         call_log = []
         accepted_src = "src-long"
         canonical = [_make_epi_canonical(accepted_src, "vantik", "evidence text for " + accepted_src)]
-        evidence = [{"source_id": accepted_src, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "L"}]
+        evidence = [{"source_id": accepted_src, "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids(accepted_src)}]
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [_make_finding("f1", "A" * 150 + "STAT-END", [accepted_src], "assertion",
-                   [{"source_id": accepted_src, "claim_id": "c1", "quote": "evidence text for " + accepted_src}],
+                   [{"source_id": accepted_src, "claim_id": "c1"}],
                    "B" * 250 + "REASON-END")],
                "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical, call_log=call_log)
@@ -827,7 +838,7 @@ class TestDirectorSynthesis:
     def test_invalid_source_id_fails_closed(self):
         call_log = []
         canonical = [_make_epi_canonical("real-src", "vantik", "evidence text for real-src")]
-        evidence = [{"source_id": "real-src", "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"}]
+        evidence = [{"source_id": "real-src", "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids("real-src")}]
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [_make_finding("f1", "S", ["FAKE-SRC"], "assertion",
                    [{"source_id": "FAKE-SRC", "claim_id": "c1", "quote": "x"}])],
@@ -841,10 +852,10 @@ class TestDirectorSynthesis:
     def test_record_only_with_bad_synthesis_fails_closed(self):
         call_log = []
         canonical = [_make_epi_canonical("real-src", "vantik", "evidence text for real-src")]
-        evidence = [{"source_id": "real-src", "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"}]
+        evidence = [{"source_id": "real-src", "claim_id": "c1", "claim_kind": "assertion", "span_ids": _ea_span_ids("real-src")}]
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [_make_finding("f1", "S", ["FAKE-SRC"], "assertion",
-                   [{"source_id": "FAKE-SRC", "claim_id": "c1", "quote": "x"}])],
+                   [{"source_id": "FAKE-SRC", "claim_id": "c1"}])],
                "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY", syn), canonical, call_log=call_log)
         assert ctx.status == "failed"
@@ -865,7 +876,7 @@ class TestDirectorFailClosed:
                 if _Tx.cc == 1:
                     return {"choices": [{"message": {"content": json.dumps({
                         "accepted": [{"source_id": accepted_src, "claim_id": "c1",
-                         "claim_kind": "assertion", "claim_text": "X"}],
+                         "claim_kind": "assertion", "span_ids": [f"{accepted_src}/span/0"]}],
                         "rejected": []})}}],
                         "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}}
                 raise RuntimeError(raw_error)
@@ -928,6 +939,8 @@ class TestDirectorContext:
             "untrusted": True,
             "content_excerpt": "CANONICAL_EXCERPT_FOR_TEST_12345",
         }])
+        ctx.set_raw_source("src-1", "https://m.example/src-1", "vantik",
+                           "comment", "CANONICAL_EXCERPT_FOR_TEST_12345")
         ctx.add_accepted_evidence([{
             "source_id": "src-1",
             "claim_id": "c1",
@@ -946,15 +959,22 @@ class TestDirectorContext:
         assert "accepted_evidence" in director_view
         assert len(director_view["accepted_evidence"]) == 1
         ev = director_view["accepted_evidence"][0]
-        assert ev["content_excerpt"] == "CANONICAL_EXCERPT_FOR_TEST_12345"
         assert ev["claim_id"] == "c1"
         assert ev["claim_kind"] == "assertion"
+        # Director view must not expose internal runtime fields
+        assert "source_content_hash" not in ev
+        assert "span_ids" not in ev
+        assert "content_excerpt" not in ev
 
         ea_view = ctx.view_for("evidence_analyst")
-        assert "source_candidates" in ea_view, (
-            "Evidence Analyst must receive source_candidates")
-        assert len(ea_view["source_candidates"]) == 1
-        assert ea_view["source_candidates"][0]["id"] == "src-1"
+        assert "sources" in ea_view, (
+            "Evidence Analyst must receive sources")
+        assert len(ea_view["sources"]) == 1
+        assert ea_view["sources"][0]["source_id"] == "src-1"
+        # EA view must not expose internal runtime fields
+        assert "source_candidates" not in ea_view
+        assert "raw_content" not in ea_view["sources"][0]
+        assert "content_excerpt" not in ea_view["sources"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -1109,7 +1129,7 @@ class TestEAContract:
 
         # Accepted item contract unchanged
         acc_req = schema["properties"]["accepted"]["items"]["required"]
-        assert set(acc_req) == {"source_id", "claim_id", "claim_kind", "claim_text"}
+        assert set(acc_req) == {"source_id", "claim_id", "claim_kind", "span_ids"}
         acc_props = schema["properties"]["accepted"]["items"]["properties"]
         assert acc_props["claim_kind"]["enum"] == ["assertion", "opinion", "proposal",
                                                     "question", "warning", "unknown"]
@@ -1138,7 +1158,7 @@ class TestEAContract:
                 return {"choices": [{"message": {"content": json.dumps({
                     "accepted": [
                         {"source_id": "src-1", "claim_id": "claim-1",
-                         "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                         "claim_kind": "assertion", "span_ids": ["src-1/span/0"]},
                     ],
                     "rejected": [],
                 })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
@@ -1159,7 +1179,7 @@ class TestEAContract:
         assert model_calls == 1, f"Expected 1 call (no repair), got {model_calls}"
         acc = result.data.get("accepted", [])
         assert len(acc) == 1
-        assert acc[0]["claim_text"] == "Exact claim text."
+        assert acc[0]["span_ids"] == ["src-1/span/0"]
 
     def test_extra_field_repairs_on_second_call(self):
         """First response has rationale (extra field → schema rejection).
@@ -1175,7 +1195,7 @@ class TestEAContract:
                     return {"choices": [{"message": {"content": json.dumps({
                         "accepted": [
                             {"source_id": "src-1", "claim_id": "claim-1",
-                             "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                             "claim_kind": "assertion", "span_ids": ["src-1/span/0"]},
                         ],
                         "rejected": [],
                         "rationale": "extra field",
@@ -1185,7 +1205,7 @@ class TestEAContract:
                     return {"choices": [{"message": {"content": json.dumps({
                         "accepted": [
                             {"source_id": "src-1", "claim_id": "claim-1",
-                             "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                             "claim_kind": "assertion", "span_ids": ["src-1/span/0"]},
                         ],
                         "rejected": [],
                     })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
@@ -1224,7 +1244,7 @@ class TestEAThinking:
                 return {"choices": [{"message": {"content": json.dumps({
                     "accepted": [
                         {"source_id": "s", "claim_id": "c",
-                         "claim_kind": "assertion", "claim_text": "T"},
+                         "claim_kind": "assertion", "span_ids": ["s/span/0"]},
                     ],
                     "rejected": [],
                 })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
@@ -1350,3 +1370,324 @@ class TestEAThinking:
         assert len(payloads) == 1
         assert "thinking" not in payloads[0]
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Source-fidelity contract tests (span-based evidence)
+# ---------------------------------------------------------------------------
+
+class TestSourceFidelity:
+    """Tests for the span-based source-fidelity contract."""
+
+    def test_span_segmentation_recovers_raw_content(self):
+        """Concatenating all span texts recovers original raw_content."""
+        from agency.context import _segment_spans
+        raw = "Hello world. **Bold text.** More content.\n\nNew paragraph here."
+        spans = _segment_spans("src", "hash", raw)
+        assert "".join(s.text for s in spans) == raw
+        assert all(len(s.text) <= 1000 for s in spans)
+
+    def test_paragraph_separator_on_previous_span(self):
+        """\\n\\n belongs to the end of the previous paragraph, not the next."""
+        from agency.context import _segment_spans
+        raw = "First sentence.\n\nSecond sentence."
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "First sentence.\n\n"
+        assert spans[1].text == "Second sentence."
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_pure_newline_source(self):
+        """Pure \\n\\n source → exactly one span."""
+        from agency.context import _segment_spans
+        raw = "\n\n"
+        spans = _segment_spans("src", "hash", raw)
+        assert len(spans) == 1
+        assert spans[0].text == "\n\n"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_repeated_separators(self):
+        """Repeated \\n\\n\\n\\n belongs to the preceding text."""
+        from agency.context import _segment_spans
+        raw = "Heading\n\n\n\nBody"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "Heading\n\n\n\n"
+        assert spans[1].text == "Body"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_leading_newlines(self):
+        """Leading \\n\\n belongs to the first textual span."""
+        from agency.context import _segment_spans
+        raw = "\n\nBody"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "\n\nBody"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_trailing_newlines(self):
+        """Trailing \\n\\n belongs to the last textual span."""
+        from agency.context import _segment_spans
+        raw = "Body\n\n"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "Body\n\n"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_mixed_boundaries(self):
+        """Mixed single and repeated separators."""
+        from agency.context import _segment_spans
+        raw = "A\n\n\n\nB\n\nC"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "A\n\n\n\n"
+        assert spans[1].text == "B\n\n"
+        assert spans[2].text == "C"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_markdown_bold_preserved_in_span(self):
+        """Markdown **bold** markers survive segmentation unchanged."""
+        from agency.context import _segment_spans
+        raw = "**Permission escalation patterns.** Not just stuff."
+        spans = _segment_spans("src", "hash", raw)
+        assert "**Permission escalation patterns.**" in spans[0].text
+
+    def test_claim_text_extracted_from_raw_source(self):
+        """Orchestrator extracts claim_text from raw source via span_ids."""
+        canonical = [_make_epi_canonical("src-ct", "vantik", "The exact claim text here.")]
+        evidence = [{"source_id": "src-ct", "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids("src-ct")}]
+        ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
+        assert ctx.status == "completed"
+        ev = next(e for e in ctx.accepted_evidence if e["source_id"] == "src-ct")
+        assert ev["claim_text"] == "The exact claim text here."
+        assert "source_content_hash" in ev
+
+    def test_director_quote_injected_from_accepted_evidence(self):
+        """Director provides only source_id+claim_id; code injects quote."""
+        sid = "src-inj"
+        canonical = [_make_epi_canonical(sid, "vantik", "Injected quote text here.")]
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids(sid)}]
+        f = _make_finding("f1", "Injected test.", [sid], "assertion",
+            [{"source_id": sid, "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
+        assert ctx.status == "completed"
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        injected = f1["source_quotes"][0]["quote"]
+        assert injected == "Injected quote text here."
+
+    def test_unknown_span_id_fails_closed(self):
+        """EA referencing a non-existent span_id → FAIL_CLOSED."""
+        sid = "src-unk"
+        canonical = [_make_epi_canonical(sid, "vantik", "Valid content.")]
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": [f"{sid}/span/999"]}]  # does not exist
+        ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
+        assert ctx.status == "failed"
+        assert any("Unknown span_id" in i["description"]
+                   for i in ctx.incidents)
+
+    def test_non_contiguous_span_ids_fails_closed(self):
+        """EA referencing non-contiguous spans → FAIL_CLOSED."""
+        sid = "src-nc"
+        # Content long enough to produce at least 3 spans
+        long_text = "Sentence one here. " + ("x" * 1100) + " Sentence three here."
+        canonical = [_make_epi_canonical(sid, "vantik", long_text)]
+        # Reference span 0 and span 2 (skipping span 1)
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": [f"{sid}/span/0", f"{sid}/span/2"]}]
+        ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
+        assert ctx.status == "failed"
+        assert any("Non-contiguous" in i["description"]
+                   for i in ctx.incidents)
+
+    def test_empty_span_ids_fails_closed(self):
+        """EA with empty span_ids → schema rejection → FAIL_CLOSED."""
+        sid = "src-empty"
+        canonical = [_make_epi_canonical(sid, "vantik", "Content.")]
+        evidence = [{"source_id": sid, "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": []}]
+        ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
+        assert ctx.status == "failed"
+        assert any("evidence_analyst" in i["description"].lower()
+                   for i in ctx.incidents), (
+            f"Expected EA failure, got: {ctx.incidents}")
+
+    def test_director_quote_injected_not_authored(self):
+        """Director model-facing schema must not include quote field."""
+        from agency.model_client import DeepSeekClient
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        director = reg["agency_director"]
+        director_schema = director._adapter.output_schema
+        sq_props = (director_schema["properties"]["synthesis"]
+                    ["properties"]["findings"]["items"]
+                    ["properties"]["source_quotes"]["items"]["properties"])
+        assert "quote" not in sq_props, (
+            f"Director model-facing schema must not have quote: {sorted(sq_props.keys())}")
+
+    def test_no_writes_in_dry_run(self):
+        """Dry-run observe produces zero transactions."""
+        canonical = [_make_epi_canonical("src-dry", "vantik", "No writes.")]
+        evidence = [{"source_id": "src-dry", "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids("src-dry")}]
+        ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
+        assert len(ctx.transactions) == 0
+
+    # ── B001 regression: quote-character mismatch eliminated ──
+    def test_b001_quote_punctuation_preserved(self):
+        """Source with double quotes → claim_text + injected quote preserve them."""
+        raw = 'That showed up earlier as "you can verify a well-formed lie."'
+        canonical = [_make_epi_canonical("src-b001", "hermes-sankhya-25", raw)]
+        # EA references the span containing the double-quoted text
+        evidence = [{"source_id": "src-b001", "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids("src-b001")}]
+        f = _make_finding("f1", "Well-formed lie warning.", ["src-b001"], "assertion",
+            [{"source_id": "src-b001", "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
+        assert ctx.status == "completed"
+        # Stored claim_text retains double quotes
+        ev = next(e for e in ctx.accepted_evidence if e["claim_id"] == "c1")
+        assert '"you can verify a well-formed lie."' in ev["claim_text"]
+        # Injected quote is identical to canonical text
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        injected = f1["source_quotes"][0]["quote"]
+        assert injected == raw
+        # No provenance incidents
+        assert len(ctx.incidents) == 0
+
+    # ── B007 regression: markdown bold + content beyond 500 chars ──
+    def test_b007_markdown_bold_and_long_content_preserved(self):
+        """Content with **markdown** beyond char 500 survives intact."""
+        # Build >700 chars with claim text after char 500
+        prefix = "Preamble text. " * 80  # ~1200 chars of filler
+        claim_text = "**Permission escalation patterns.** Not just 'agent ran sudo' — but when an agent gradually expands its own access over multiple steps."
+        raw = prefix + claim_text
+        assert len(raw) > 700
+        assert "**Permission escalation patterns.**" in raw
+        # The claim text starts well after char 500
+        assert raw.index("**Permission escalation patterns.**") > 500
+
+        canonical = [_make_epi_canonical("src-b007", "murphyhook", raw)]
+        # The claim spans across one or more spans — EA references them all
+        # Find which span(s) contain the claim
+        from agency.context import _segment_spans
+        spans = _segment_spans("src-b007", "hash", raw)
+        claim_spans = [s for s in spans if "Permission escalation patterns" in s.text]
+        span_ids = [s.span_id for s in claim_spans]
+
+        evidence = [{"source_id": "src-b007", "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": span_ids}]
+        f = _make_finding("f1", "Permission escalation patterns logged.", ["src-b007"], "assertion",
+            [{"source_id": "src-b007", "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
+        assert ctx.status == "completed"
+
+        # Claim text contains markdown bold markers exactly
+        ev = next(e for e in ctx.accepted_evidence if e["claim_id"] == "c1")
+        assert "**Permission escalation patterns.**" in ev["claim_text"]
+
+        # Injected quote is exactly the stored claim_text
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        injected = f1["source_quotes"][0]["quote"]
+        assert injected == ev["claim_text"], (
+            "Injected quote must equal claim_text exactly")
+        assert ev["claim_text"] == claim_text, (
+            "Stored claim_text must equal the exact canonical claim")
+        assert "**" in injected
+
+        # No provenance incidents
+        assert len(ctx.incidents) == 0
+
+    # ── View contract tests ──
+    def test_ea_view_contains_spans_exactly_once(self):
+        """EA view sources[*].spans contains span text exactly once per span."""
+        sha = _make_sha("eav")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.set_source_candidates([{"id": "s1", "url": "", "author_handle": "a",
+                                     "content_type": "comment", "untrusted": True,
+                                     "content_excerpt": "Hello world."}])
+        ctx.set_raw_source("s1", "", "a", "comment", "Hello world. Second sentence.")
+        view = ctx.view_for("evidence_analyst")
+        assert len(view["sources"]) == 1
+        spans = view["sources"][0]["spans"]
+        assert len(spans) >= 1
+        # Concatenated span texts must not duplicate
+        texts = [s["text"] for s in spans]
+        full = "".join(texts)
+        assert full == "Hello world. Second sentence."
+        assert full.count("Hello world.") == 1
+
+    def test_ea_view_excludes_raw_content_and_content_excerpt(self):
+        """EA view must not expose raw_content or content_excerpt anywhere."""
+        sha = _make_sha("eav2")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.set_source_candidates([{"id": "s1", "url": "", "author_handle": "a",
+                                     "content_type": "comment", "untrusted": True,
+                                     "content_excerpt": "Hello."}])
+        ctx.set_raw_source("s1", "", "a", "comment", "Hello.")
+        view = ctx.view_for("evidence_analyst")
+
+        _FORBIDDEN = ("source_candidates", "raw_content", "content_excerpt",
+                      "source_content_hash")
+        # Top-level view
+        for key in _FORBIDDEN:
+            assert key not in view, f"EA view must not contain {key}"
+        # Each source
+        for src in view["sources"]:
+            for key in _FORBIDDEN:
+                assert key not in src, f"EA source must not contain {key}"
+            # Each span
+            for span in src.get("spans", []):
+                for key in _FORBIDDEN:
+                    assert key not in span, f"EA span must not contain {key}"
+
+    def test_director_view_excludes_internal_fields(self):
+        """Director view accepted_evidence excludes source_content_hash, span_ids."""
+        sha = _make_sha("dv")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.add_accepted_evidence([{
+            "source_id": "s1", "claim_id": "c1", "claim_kind": "assertion",
+            "claim_text": "Text.", "author_handle": "a", "source_class": "external",
+            "content_type": "comment", "url": "", "content_excerpt": "excerpt",
+            "source_content_hash": "abc123", "span_ids": ["s1/span/0"],
+        }])
+        view = ctx.view_for("agency_director")
+        ev = view["accepted_evidence"][0]
+        assert "source_content_hash" not in ev
+        assert "span_ids" not in ev
+        assert "content_excerpt" not in ev
+        # Public fields present
+        for f in ("source_id", "claim_id", "claim_kind", "claim_text",
+                  "author_handle", "source_class"):
+            assert f in ev, f"Director view missing {f}"
+
+    def test_internal_evidence_retains_hash_and_spans(self):
+        """Internal _accepted_evidence retains source_content_hash, span_ids."""
+        sha = _make_sha("ie")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.add_accepted_evidence([{
+            "source_id": "s1", "claim_id": "c1", "claim_kind": "assertion",
+            "claim_text": "Text.", "author_handle": "a", "source_class": "external",
+            "content_type": "comment", "url": "", "content_excerpt": "excerpt",
+            "source_content_hash": "abc123", "span_ids": ["s1/span/0"],
+        }])
+        # Internal data retains runtime fields
+        ev = ctx.accepted_evidence[0]
+        assert ev["source_content_hash"] == "abc123"
+        assert ev["span_ids"] == ["s1/span/0"]

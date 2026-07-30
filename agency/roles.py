@@ -144,23 +144,25 @@ class ScoutRole:
                     # Add post itself
                     p = post.get("post", post)
                     if isinstance(p, dict) and p.get("id"):
-                        content = p.get("content", "")[:500]
+                        full_content = p.get("content", "")
                         items.append({
                             "id": p["id"], "url": f"https://www.moltbook.com/post/{p['id']}",
                             "author_handle": p.get("author", {}).get("name", "unknown"),
                             "content_type": "post", "untrusted": True,
-                            "content_excerpt": content,
+                            "content_excerpt": full_content[:500],
+                            "raw_content": full_content,
                         })
                     # Add comments
                     for c in comments_resp.get("comments", []):
                         if isinstance(c, dict) and c.get("id"):
-                            content = c.get("content", "")[:500]
+                            full_content = c.get("content", "")
                             items.append({
                                 "id": c["id"],
                                 "url": f"https://www.moltbook.com/post/{target_id}#comments",
                                 "author_handle": c.get("author", {}).get("name", "unknown"),
                                 "content_type": "comment", "untrusted": True,
-                                "content_excerpt": content,
+                                "content_excerpt": full_content[:500],
+                                "raw_content": full_content,
                             })
                     inbox = items
                 except Exception as exc:
@@ -207,6 +209,7 @@ class RecordsClerkRole:
                 "content_type": c.get("content_type", "unknown"), "untrusted": True,
                 "observed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "content_excerpt": c.get("content_excerpt", ""),
+                "raw_content": c.get("raw_content", c.get("content_excerpt", "")),
                 "paraphrase": c.get("paraphrase", ""), "provenance": [c.get("url", "")],
             })
         return RoleResult(self.ROLE, "COMPLETE", data={"normalized": normalized})
@@ -224,7 +227,8 @@ class EvidenceAnalystRole:
 
     def __call__(self, ctx_view: dict[str, Any]) -> RoleResult:
         candidates = ctx_view.get("source_candidates", [])
-        if not candidates:
+        sources = ctx_view.get("sources", [])
+        if not candidates and not sources:
             return RoleResult(self.ROLE, "NOOP")
 
         if self._adapter:
@@ -239,22 +243,32 @@ class EvidenceAnalystRole:
             return _safe_result(self.ROLE, result)
 
         accepted, rejected = [], []
-        for c in candidates:
-            if c.get("untrusted") is True:
-                cid = c.get("id") or c.get("source_id", "")
-                excerpt = c.get("content_excerpt", "")
-                if not excerpt.strip():
-                    rejected.append({
-                        "source_id": cid,
-                        "reason": "empty content_excerpt",
-                    })
-                    continue
-                accepted.append({
+        items = candidates if candidates else sources
+        for c in items:
+            cid = c.get("id") or c.get("source_id", "")
+            excerpt = c.get("content_excerpt", "")
+            if items is candidates and not excerpt.strip():
+                rejected.append({
                     "source_id": cid,
-                    "claim_id": f"det-{cid[:12]}",
-                    "claim_kind": "unknown",
-                    "claim_text": excerpt,
+                    "reason": "empty content_excerpt",
                 })
+                continue
+            # Deterministic: accept the entire source as one claim
+            # with all of its span IDs (contiguous by construction).
+            source_spans = c.get("spans", [])
+            if not source_spans:
+                # Look up spans from sources view
+                for src in ctx_view.get("sources", []):
+                    if src.get("source_id") == cid:
+                        source_spans = src.get("spans", [])
+                        break
+            span_ids = [s["span_id"] for s in source_spans] if source_spans else []
+            accepted.append({
+                "source_id": cid,
+                "claim_id": f"det-{cid[:12]}",
+                "claim_kind": "unknown",
+                "span_ids": span_ids,
+            })
         return RoleResult(self.ROLE, "COMPLETE",
                           data={"accepted": accepted, "rejected": rejected,
                                 "claims": [], "scores": {},

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import copy
 import datetime as _dt
+import hashlib
 import json
 import uuid as _uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,198 @@ def _sanitize_value(value: Any, key: str = "") -> Any:
     if isinstance(value, str) and _is_secret_key(key):
         return "[REDACTED]"
     return value
+
+
+# ---------------------------------------------------------------------------
+# Immutable source snapshot and span data
+# ---------------------------------------------------------------------------
+
+_MAX_SPAN_LENGTH = 1000
+
+
+@dataclass(frozen=True)
+class _FrozenSource:
+    """Immutable canonical source snapshot — write-once, never mutated."""
+    source_id: str
+    url: str
+    author_handle: str
+    content_type: str
+    raw_content: str
+    source_content_hash: str
+    ingested_at: str
+
+
+@dataclass(frozen=True)
+class _Span:
+    """A single contiguous text span within a source snapshot."""
+    span_id: str
+    source_id: str
+    source_content_hash: str
+    span_index: int
+    char_offset_start: int
+    char_offset_end: int
+    text: str
+
+
+def _segment_spans(source_id: str, source_content_hash: str,
+                   raw_content: str) -> tuple[_Span, ...]:
+    """Segment raw_content into deterministic non-overlapping spans.
+
+    A left-to-right scan finds paragraph boundaries (``\\n\\n``).
+    Each textual segment between boundaries is split into sentences.
+    Paragraph separators and any immediately following newlines belong
+    to the end of the preceding textual span.  Leading newlines (no
+    preceding text) belong to the first following textual span.
+    Pure-newline content produces exactly one span.
+
+    Order within each textual segment: sentence boundaries
+    (``. ! ?`` followed by whitespace or end-of-text) → 1000-codepoint
+    fallback split at last whitespace before limit.
+
+    No character or whitespace is ever dropped or duplicated —
+    concatenating all span texts in index order recovers the original
+    ``raw_content`` byte-for-byte.
+    """
+    spans: list[_Span] = []
+    span_index = 0
+
+    # Left-to-right scan for \n\n boundaries
+    n = len(raw_content)
+    seg_start = 0
+    pending_sep = ""  # accumulated separators for next text segment
+    i = 0
+    while i <= n:
+        # Look for \n\n at current position
+        if i <= n - 2 and raw_content[i:i + 2] == "\n\n":
+            # Consume this separator and any immediately following newlines
+            j = i + 2
+            while j < n and raw_content[j] == "\n":
+                j += 1
+            # Emit text from seg_start to i (the text before the separator)
+            text_segment = raw_content[seg_start:i]
+            # The separator block
+            sep_block = raw_content[i:j]
+
+            if text_segment:
+                # Text exists — split into sentences, attach sep to last unit.
+                # Prepend any pending separator from earlier newlines.
+                units = _split_sentences(text_segment)
+                if pending_sep and units:
+                    units[0] = pending_sep + units[0]
+                    pending_sep = ""
+                for ui, unit in enumerate(units):
+                    if not unit:
+                        continue
+                    if ui == len(units) - 1:
+                        unit = unit + sep_block
+                    _emit_unit(source_id, source_content_hash, unit,
+                               spans, span_index)
+                    span_index = len(spans)
+            else:
+                # No preceding text — accumulate separator for next segment
+                pending_sep += sep_block
+
+            seg_start = j
+            i = j
+        else:
+            i += 1
+
+    # Emit remaining text after last separator
+    remaining = raw_content[seg_start:]
+    if pending_sep:
+        remaining = pending_sep + remaining
+    if remaining:
+        units = _split_sentences(remaining)
+        for unit in units:
+            if not unit:
+                continue
+            _emit_unit(source_id, source_content_hash, unit,
+                       spans, span_index)
+            span_index = len(spans)
+
+    # If nothing was emitted (pure-newline content → one span)
+    if not spans and raw_content:
+        _emit_unit(source_id, source_content_hash, raw_content,
+                   spans, 0)
+
+    # Postcondition: concatenation recovers original
+    reconstructed = "".join(s.text for s in spans)
+    if reconstructed != raw_content:
+        raise RuntimeError(
+            f"Span segmentation lost or duplicated characters "
+            f"for source {source_id}: "
+            f"expected {len(raw_content)} chars, got {len(reconstructed)}")
+    return tuple(spans)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text at sentence boundaries (``. ! ?`` + whitespace/end).
+
+    The whitespace following a sentence terminator belongs to the
+    preceding sentence.
+    """
+    result: list[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ('.', '!', '?'):
+            # Check if followed by whitespace or end-of-text
+            if i + 1 >= n or text[i + 1] in (' ', '\t', '\n', '\r'):
+                # Include trailing whitespace in this sentence
+                j = i + 1
+                while j < n and text[j] in (' ', '\t', '\n', '\r'):
+                    j += 1
+                result.append(text[start:j])
+                start = j
+                i = j
+                continue
+        i += 1
+    # Remaining text (no sentence terminator at end)
+    if start < n:
+        result.append(text[start:])
+    return result
+
+
+def _emit_unit(source_id: str, source_content_hash: str, text: str,
+               spans: list[_Span], span_index: int) -> None:
+    """Emit one or more spans for a text unit, splitting at max length."""
+    offset = sum(len(s.text) for s in spans)
+    remaining = text
+    while len(remaining) > _MAX_SPAN_LENGTH:
+        split_at = _MAX_SPAN_LENGTH
+        # Walk back to nearest whitespace boundary
+        for k in range(_MAX_SPAN_LENGTH - 1, 0, -1):
+            if remaining[k] in (' ', '\t', '\n', '\r'):
+                split_at = k + 1
+                break
+        chunk = remaining[:split_at]
+        if not chunk:
+            chunk = remaining[:_MAX_SPAN_LENGTH]
+            split_at = _MAX_SPAN_LENGTH
+        spans.append(_Span(
+            span_id=f"{source_id}/span/{span_index}",
+            source_id=source_id,
+            source_content_hash=source_content_hash,
+            span_index=span_index,
+            char_offset_start=offset,
+            char_offset_end=offset + len(chunk),
+            text=chunk,
+        ))
+        span_index += 1
+        offset += len(chunk)
+        remaining = remaining[split_at:]
+    if remaining:
+        spans.append(_Span(
+            span_id=f"{source_id}/span/{span_index}",
+            source_id=source_id,
+            source_content_hash=source_content_hash,
+            span_index=span_index,
+            char_offset_start=offset,
+            char_offset_end=offset + len(remaining),
+            text=remaining,
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +359,7 @@ class AgencyContextV1:
         "_transactions", "_incidents",
         "_audit", "status", "completed_at",
         "_event_log", "_repo_provider", "_evidence_index",
+        "_raw_sources", "_spans",
     )
 
     def __init__(self, trigger: str = "manual", shift: str = "morning",
@@ -198,6 +393,8 @@ class AgencyContextV1:
         self.policy = policy or {}
         self.budget = budget or AgencyBudget()
         self._evidence_index: set[str] = set()  # durable cross-run dedup IDs
+        self._raw_sources: dict[str, _FrozenSource] = {}
+        self._spans: dict[str, tuple[_Span, ...]] = {}
 
         # -- private collections (never exposed directly) --
         self._inbox: list[dict[str, Any]] = []
@@ -271,6 +468,40 @@ class AgencyContextV1:
     def audit(self) -> dict[str, Any]:
         return copy.deepcopy(self._audit)
 
+    # -- raw source & span management ------------------------------------
+
+    def set_raw_source(self, source_id: str, url: str,
+                       author_handle: str, content_type: str,
+                       raw_content: str) -> None:
+        """Store an immutable source snapshot and segment it into spans.
+
+        Must only be called once per source_id per run.  A second call
+        for the same source_id raises RuntimeError (FAIL_CLOSED).
+        """
+        if source_id in self._raw_sources:
+            raise RuntimeError(
+                f"Source snapshot {source_id} already ingested — "
+                f"cannot re-populate in the same run")
+        source_content_hash = hashlib.sha256(
+            raw_content.encode("utf-8")).hexdigest()
+        ingested_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        self._raw_sources[source_id] = _FrozenSource(
+            source_id=source_id, url=url, author_handle=author_handle,
+            content_type=content_type, raw_content=raw_content,
+            source_content_hash=source_content_hash,
+            ingested_at=ingested_at)
+        self._spans[source_id] = _segment_spans(
+            source_id, source_content_hash, raw_content)
+
+    @property
+    def raw_sources(self) -> dict[str, _FrozenSource]:
+        """Return a shallow copy — _FrozenSource is immutable."""
+        return dict(self._raw_sources)
+
+    def spans_for(self, source_id: str) -> tuple[_Span, ...]:
+        """Return spans for a source. Returns empty tuple if unknown."""
+        return self._spans.get(source_id, ())
+
     # -- mutation methods (append-only) ------------------------------------
 
     def add_inbox(self, items: list[dict[str, Any]]) -> None:
@@ -339,10 +570,36 @@ class AgencyContextV1:
         elif role == "records_clerk":
             base.update({"source_candidates": copy.deepcopy(self._source_candidates)})
         elif role == "evidence_analyst":
-            base.update({"source_candidates": copy.deepcopy(self._source_candidates)})
+            # Model-facing view: per-source metadata + spans only.
+            # No raw_content, content_excerpt, source_content_hash, offsets.
+            sources = []
+            for sc in self._source_candidates:
+                sid = sc.get("id") or sc.get("source_id", "")
+                src_spans = self._spans.get(sid, ())
+                if not src_spans:
+                    continue
+                sources.append({
+                    "source_id": sid,
+                    "author_handle": sc.get("author_handle", "unknown"),
+                    "content_type": sc.get("content_type", "unknown"),
+                    "url": sc.get("url", ""),
+                    "spans": [{"span_id": s.span_id, "text": s.text}
+                              for s in src_spans],
+                })
+            base.update({"sources": sources})
         elif role == "agency_director":
+            # Director sees only the public evidence fields, not internal
+            # runtime data (source_content_hash, span_ids, content_excerpt, etc.)
+            _DIRECTOR_EV_FIELDS = (
+                "source_id", "claim_id", "claim_kind", "claim_text",
+                "author_handle", "source_class", "content_type", "url",
+            )
+            filtered_evidence = [
+                {k: v for k, v in ev.items() if k in _DIRECTOR_EV_FIELDS}
+                for ev in self._accepted_evidence
+            ]
             base.update({
-                "accepted_evidence": copy.deepcopy(self._accepted_evidence),
+                "accepted_evidence": filtered_evidence,
                 "agent_profiles": copy.deepcopy(self._agent_profiles),
                 "decisions": copy.deepcopy(self._decisions),
                 "work_queue": list(self._work_queue),
@@ -430,6 +687,9 @@ class AgencyContextV1:
                 "transactions": copy.deepcopy(self._transactions),
                 "incidents": copy.deepcopy(self._incidents),
                 "audit": copy.deepcopy(self._audit),
+                "raw_sources": {sid: {"source_id": s.source_id,
+                                      "source_content_hash": s.source_content_hash}
+                                for sid, s in self._raw_sources.items()},
             })
         return d
 

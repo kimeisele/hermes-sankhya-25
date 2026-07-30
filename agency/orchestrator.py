@@ -62,14 +62,18 @@ def build_role_registry(client: DeepSeekClient | None = None,
         import copy as _copy
 
         # Reduced Evidence Analyst model-output schema.
-        # The committed schema permits optional claims, scores, and
-        # rationale that the orchestrator does not consume.
+        # The committed schema already has span_ids; only remove optional
+        # top-level fields that the orchestrator does not consume.
         _ea_model_schema = _copy.deepcopy(evidence_schema)
         for _field in ("claims", "scores", "rationale"):
             _ea_model_schema["properties"].pop(_field, None)
 
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
-                                            flash_system or "You extract claims and classify evidence.",
+                                            flash_system or (
+            "You extract claims and classify evidence. "
+            "For each claim, select one or more consecutive span_ids "
+            "from the same source that together contain the exact claim text. "
+            "Do not modify, paraphrase, or reconstruct the text."),
                                             _ea_model_schema, is_write_critical=False,
                                             thinking_enabled=False)
         # Derive Director model-output schema from committed durable schema.
@@ -84,6 +88,11 @@ def build_role_registry(client: DeepSeekClient | None = None,
             _model_finding["properties"].pop(_field, None)
             if _field in _model_finding["required"]:
                 _model_finding["required"].remove(_field)
+        # Remove quote from model-facing source_quotes — Director must not
+        # generate quote text; the orchestrator injects it from accepted_evidence.
+        _sq = _model_finding["properties"]["source_quotes"]["items"]
+        _sq["properties"].pop("quote", None)
+        _sq["required"] = ["source_id", "claim_id"]
         pro_adapter = RoleModelAdapter(client, client.pro_model,
                                        pro_system or (
             "You are a source-grounded research synthesizer, not an engineering "
@@ -322,7 +331,6 @@ class AgencyOrchestrator:
                 for sq in finding.get("source_quotes", []):
                     q_src = sq.get("source_id", "")
                     q_claim = sq.get("claim_id", "")
-                    quote = sq.get("quote", "")
                     if not q_src or q_src not in finding.get("source_ids", []):
                         self.ctx.record_incident(
                             f"Quote source_id {q_src} not in finding source_ids",
@@ -335,12 +343,7 @@ class AgencyOrchestrator:
                             severity="high")
                         self.ctx.close("failed")
                         return "NOOP"
-                    if not quote:
-                        self.ctx.record_incident(
-                            f"Empty quote in finding {finding.get('finding_id','?')}",
-                            severity="high")
-                        self.ctx.close("failed")
-                        return "NOOP"
+
                     claim_key = (q_src, q_claim)
                     ac_ev = accepted_claims.get(claim_key)
                     if ac_ev is None:
@@ -349,15 +352,37 @@ class AgencyOrchestrator:
                             severity="high")
                         self.ctx.close("failed")
                         return "NOOP"
-                    excerpt = ac_ev.get("content_excerpt", "")
-                    if quote not in excerpt:
+
+                    # Reject Director-supplied quote text
+                    if sq.get("quote", "").strip():
                         self.ctx.record_incident(
-                            f"Quote not found in canonical excerpt for "
-                            f"finding {finding.get('finding_id','?')}, "
-                            f"source {q_src} claim {q_claim}",
+                            f"Director provided quote text for claim {q_claim} — "
+                            f"model must not author durable quotes",
                             severity="high")
                         self.ctx.close("failed")
                         return "NOOP"
+
+                    # Verify source_content_hash has not drifted
+                    stored_hash = ac_ev.get("source_content_hash", "")
+                    raw_src = self.ctx.raw_sources.get(q_src)
+                    if raw_src is None:
+                        self.ctx.record_incident(
+                            f"Raw source {q_src} not available for claim {q_claim}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
+                    if stored_hash != raw_src.source_content_hash:
+                        self.ctx.record_incident(
+                            f"Source content hash mismatch for claim {q_claim}: "
+                            f"stored {stored_hash[:12]} != current "
+                            f"{raw_src.source_content_hash[:12]}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
+
+                    # Inject exact claim_text from accepted_evidence as quote
+                    sq["quote"] = ac_ev.get("claim_text", "")
+
                     quoted_src_ids.add(q_src)
                     claim_kinds.add(ac_ev.get("claim_kind", "unknown"))
 
@@ -486,6 +511,17 @@ class AgencyOrchestrator:
             candidates = data.get("candidates", [])
             if candidates:
                 self.ctx.set_source_candidates(candidates)
+                # Ingest raw source snapshots for span-based evidence
+                for c in candidates:
+                    raw = c.get("raw_content", "")
+                    if raw:
+                        self.ctx.set_raw_source(
+                            source_id=c.get("id", c.get("source_id", "")),
+                            url=c.get("url", ""),
+                            author_handle=c.get("author_handle", "unknown"),
+                            content_type=c.get("content_type", "unknown"),
+                            raw_content=raw,
+                        )
 
         elif role_name == "records_clerk" and result.status == "COMPLETE":
             normalized = data.get("normalized", [])
@@ -534,6 +570,59 @@ class AgencyOrchestrator:
                             severity="high")
                         self.ctx.close("failed")
                         return
+
+                    # --- span-based claim_text extraction ---
+                    span_ids = entry.get("span_ids", [])
+                    if not span_ids:
+                        self.ctx.record_incident(
+                            f"Evidence Analyst claim {cid} has empty span_ids",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return
+                    # Validate span_ids: all exist, contiguous, same source
+                    all_spans = self.ctx.spans_for(sid)
+                    span_by_id = {s.span_id: s for s in all_spans}
+                    resolved_spans = []
+                    for spid in span_ids:
+                        sp = span_by_id.get(spid)
+                        if sp is None:
+                            self.ctx.record_incident(
+                                f"Unknown span_id {spid} in EA claim {cid}",
+                                severity="high")
+                            self.ctx.close("failed")
+                            return
+                        if sp.source_id != sid:
+                            self.ctx.record_incident(
+                                f"Cross-source span_id {spid} (source {sp.source_id}) "
+                                f"in EA claim {cid} for source {sid}",
+                                severity="high")
+                            self.ctx.close("failed")
+                            return
+                        resolved_spans.append(sp)
+                    # Check contiguity: span indices must be consecutive
+                    indices = [s.span_index for s in resolved_spans]
+                    if indices != list(range(indices[0], indices[-1] + 1)):
+                        self.ctx.record_incident(
+                            f"Non-contiguous span_ids for EA claim {cid}: "
+                            f"indices {indices}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return
+                    # Extract exact claim_text from raw source
+                    raw_src = self.ctx.raw_sources.get(sid)
+                    if raw_src is None:
+                        self.ctx.record_incident(
+                            f"Raw source {sid} not found for claim {cid}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return
+                    first_span = resolved_spans[0]
+                    last_span = resolved_spans[-1]
+                    claim_text = raw_src.raw_content[
+                        first_span.char_offset_start:last_span.char_offset_end]
+                    source_content_hash = raw_src.source_content_hash
+                    # --- end span-based extraction ---
+
                     author = orig.get("author_handle", "")
                     if not author or author == "unknown" or author not in self._internal_handles:
                         if not author or author in ("unknown", ""):
@@ -551,7 +640,9 @@ class AgencyOrchestrator:
                         "url": orig.get("url", ""),
                         "source_class": sc,
                         "claim_kind": entry.get("claim_kind", "unknown"),
-                        "claim_text": entry.get("claim_text", ""),
+                        "claim_text": claim_text,
+                        "source_content_hash": source_content_hash,
+                        "span_ids": span_ids,
                     })
                 self.ctx.add_accepted_evidence(rehydrated)
             self.ctx.append_event(SOURCE_ACCEPTED, {
