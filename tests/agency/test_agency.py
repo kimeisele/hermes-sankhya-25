@@ -904,3 +904,55 @@ class TestDirectorFailClosed:
         assert "## Accepted Evidence" in report
         assert "## Research Synthesis" not in report
         assert len(ctx.transactions) == 0
+
+
+# ---------------------------------------------------------------------------
+# Director context: remove duplicate source_candidates
+# ---------------------------------------------------------------------------
+
+class TestDirectorContext:
+    """Director view must exclude source_candidates (already present in
+    accepted_evidence). Evidence Analyst must continue receiving them."""
+
+    def test_director_view_excludes_source_candidates(self):
+        sha = _make_sha()
+        ctx = AgencyContextV1(
+            base_sha=sha, trigger="manual", shift="morning",
+            repository="test",
+            campaign={"active_inquiry": "t", "objective": "Test",
+                      "internal_author_handles": ["hermes-sankhya-25"]})
+        ctx.set_source_candidates([{
+            "id": "src-1",
+            "url": "https://m.example/src-1",
+            "author_handle": "vantik",
+            "content_type": "comment",
+            "untrusted": True,
+            "content_excerpt": "CANONICAL_EXCERPT_FOR_TEST_12345",
+        }])
+        ctx.add_accepted_evidence([{
+            "source_id": "src-1",
+            "claim_id": "c1",
+            "author_handle": "vantik",
+            "content_type": "comment",
+            "content_excerpt": "CANONICAL_EXCERPT_FOR_TEST_12345",
+            "url": "https://m.example/src-1",
+            "source_class": "external",
+            "claim_kind": "assertion",
+            "claim_text": "A claim.",
+        }])
+
+        director_view = ctx.view_for("agency_director")
+        assert "source_candidates" not in director_view, (
+            "Director view must not contain source_candidates")
+        assert "accepted_evidence" in director_view
+        assert len(director_view["accepted_evidence"]) == 1
+        ev = director_view["accepted_evidence"][0]
+        assert ev["content_excerpt"] == "CANONICAL_EXCERPT_FOR_TEST_12345"
+        assert ev["claim_id"] == "c1"
+        assert ev["claim_kind"] == "assertion"
+
+        ea_view = ctx.view_for("evidence_analyst")
+        assert "source_candidates" in ea_view, (
+            "Evidence Analyst must receive source_candidates")
+        assert len(ea_view["source_candidates"]) == 1
+        assert ea_view["source_candidates"][0]["id"] == "src-1"

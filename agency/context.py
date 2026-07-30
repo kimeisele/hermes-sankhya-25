@@ -342,7 +342,6 @@ class AgencyContextV1:
             base.update({"source_candidates": copy.deepcopy(self._source_candidates)})
         elif role == "agency_director":
             base.update({
-                "source_candidates": copy.deepcopy(self._source_candidates),
                 "accepted_evidence": copy.deepcopy(self._accepted_evidence),
                 "agent_profiles": copy.deepcopy(self._agent_profiles),
                 "decisions": copy.deepcopy(self._decisions),
