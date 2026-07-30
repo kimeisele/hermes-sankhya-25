@@ -2,10 +2,38 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EvidenceAnalysisOutput",
   "type": "object",
+  "additionalProperties": false,
   "required": ["accepted", "rejected"],
   "properties": {
-    "accepted": {"type": "array", "items": {"type": "object"}},
-    "rejected": {"type": "array", "items": {"type": "object"}},
+    "accepted": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_id", "claim_id", "claim_kind", "claim_text"],
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "claim_id": {"type": "string", "minLength": 1},
+          "claim_kind": {
+            "type": "string",
+            "enum": ["assertion", "opinion", "proposal", "question", "warning", "unknown"]
+          },
+          "claim_text": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "reason"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
     "claims": {"type": "array", "items": {"type": "object"}},
     "scores": {"type": "object"},
     "rationale": {"type": "string"}

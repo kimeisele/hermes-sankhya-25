@@ -59,6 +59,20 @@ def _load_config() -> dict:
         raise ValueError("moltbook_read_only must be true in Observe")
     if cfg.get("allow_original_posts", False):
         raise ValueError("allow_original_posts must be false")
+    # active_inquiry_objective — required, non-empty, not equal to inquiry ID
+    objective = (cfg.get("active_inquiry_objective") or "").strip()
+    if not objective:
+        raise ValueError("active_inquiry_objective must be a non-empty string")
+    if objective == cfg.get("active_inquiry", ""):
+        raise ValueError("active_inquiry_objective must not equal active_inquiry (UUID)")
+    cfg["active_inquiry_objective"] = objective
+    # internal_author_handles — required non-empty list of non-empty strings
+    internal_authors = cfg.get("internal_author_handles", [])
+    if not isinstance(internal_authors, list) or not internal_authors:
+        raise ValueError("internal_author_handles must be a non-empty list")
+    for h in internal_authors:
+        if not isinstance(h, str) or not h.strip():
+            raise ValueError("internal_author_handles entries must be non-empty strings")
     budget = cfg.get("budget", {})
     for k in ["max_role_calls", "max_tokens", "max_cost_estimate"]:
         v = budget.get(k)
@@ -126,7 +140,8 @@ def main() -> int:
                        "allow_original_posts": False},
         budget=budget, repo_provider=repo_provider, role_registry=role_registry,
         campaign={"active_inquiry": cfg.get("active_inquiry", ""),
-                  "objective": cfg.get("active_inquiry_objective", "")})
+                  "objective": cfg["active_inquiry_objective"],
+                  "internal_author_handles": cfg["internal_author_handles"]})
 
     # Load durable evidence index BEFORE execution
     from agency.evidence_index import load_evidence_index
