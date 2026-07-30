@@ -1271,8 +1271,8 @@ class TestEAThinking:
         assert all(p["thinking"] == {"type": "disabled"} for p in payloads)
         assert result.status == "COMPLETE"
 
-    def test_only_evidence_analyst_forces_thinking_mode(self):
-        """EA adapter has thinking_enabled=False; all others are None."""
+    def test_only_evidence_analyst_and_director_force_thinking_mode(self):
+        """EA and Director have thinking_enabled=False; all other adapters are None."""
         from agency.model_client import DeepSeekClient
 
         class _Tx:
@@ -1283,14 +1283,70 @@ class TestEAThinking:
         client = DeepSeekClient(transport=_Tx())
         reg = build_role_registry(client=client)
 
-        # Evidence Analyst is the only one with thinking_enabled set
+        # EA and Director have thinking_enabled=False; others are None
         for role_name, adapter in reg.items():
             if not hasattr(adapter, '_adapter') or adapter._adapter is None:
                 continue
-            if role_name == "evidence_analyst":
+            if role_name in ("evidence_analyst", "agency_director"):
                 assert adapter._adapter.thinking_enabled is False, (
-                    f"EA must have thinking_enabled=False, got {adapter._adapter.thinking_enabled}")
+                    f"{role_name} must have thinking_enabled=False, "
+                    f"got {adapter._adapter.thinking_enabled}")
             else:
                 assert adapter._adapter.thinking_enabled is None, (
                     f"{role_name} must have thinking_enabled=None, "
                     f"got {adapter._adapter.thinking_enabled}")
+        # Auditor _pro_adapter must remain provider-default
+        auditor = reg.get("auditor")
+        assert auditor is not None
+        assert auditor._pro_adapter.thinking_enabled is None
+
+    def test_director_disables_thinking(self):
+        """Director adapter includes 'thinking': {'type': 'disabled'}."""
+        payloads = []
+
+        class _Tx:
+            def __call__(self, payload):
+                payloads.append(dict(payload))
+                return {"choices": [{"message": {"content": json.dumps({
+                    "decision_id": "d1", "disposition": "RECORD_ONLY",
+                    "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
+                    "rationale": "test",
+                })}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        director = reg["agency_director"]
+        result = director({"accepted_evidence": [], "campaign": {"objective": "T"},
+                           "budget": {"role_calls_used": 0, "max_role_calls": 20}})
+
+        assert len(payloads) == 1, f"Expected 1 call, got {len(payloads)}"
+        assert payloads[0]["thinking"] == {"type": "disabled"}
+        assert result.status == "COMPLETE"
+
+    def test_auditor_pro_adapter_invoke_omits_thinking(self):
+        """Auditor's _pro_adapter.invoke() must not include 'thinking' in
+        payload and must return success."""
+        payloads = []
+
+        class _Tx:
+            def __call__(self, payload):
+                payloads.append(dict(payload))
+                return _dir_resp("RECORD_ONLY")
+
+        from agency.model_client import DeepSeekClient
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        auditor = reg["auditor"]
+
+        assert auditor._pro_adapter.thinking_enabled is None
+
+        result = auditor._pro_adapter.invoke({
+            "findings": ["test_finding"],
+            "budget": {"role_calls_used": 1, "max_role_calls": 20},
+            "campaign": {"objective": "Test"},
+        })
+
+        assert len(payloads) == 1
+        assert "thinking" not in payloads[0]
+        assert result.success is True
