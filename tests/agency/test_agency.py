@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agency.context import (AgencyContextV1, AgencyBudget, RepoStateProvider, _sanitize_value)
 from agency.events import EventLog, RUN_STARTED, RUN_CLOSED
-from agency.roles import (RoleResult, ScoutRole, AgencyDirectorRole)
+from agency.roles import (RoleResult, ScoutRole, RecordsClerkRole,
+                         EvidenceAnalystRole, AgencyDirectorRole)
 from agency.orchestrator import AgencyOrchestrator, build_role_registry
 from agency.hq import render_hq_markdown
 
@@ -1919,55 +1920,105 @@ class TestSourceAccounting:
         self._assert_fail(orch,
             "Evidence Analyst source accounting: unaccounted source_id: s3")
 
-    # -- Director-stop integration test --
+    # -- Director-stop integration test (full orch.run path) --
 
     def test_director_not_called_on_accounting_failure(self):
-        """Unaccounted source → FAIL_CLOSED before Director phase."""
+        """Unaccounted source → FAIL_CLOSED before Director, via orch.run()."""
         sha = _make_sha("dir-stop")
-        call_log = []
+        director_calls = []
+
+        # Stub roles
+        class _StubScout(ScoutRole):
+            def __call__(self, ctx_view):
+                _StubScout.called = getattr(_StubScout, 'called', 0) + 1
+                candidates = []
+                for i in range(4):
+                    sid = f"s{i}"
+                    candidates.append({
+                        "id": sid,
+                        "url": f"https://example.invalid/{sid}",
+                        "author_handle": "fixture-author",
+                        "content_type": "comment",
+                        "untrusted": True,
+                        "content_excerpt": f"Canonical claim for {sid}.",
+                        "raw_content": f"Canonical claim for {sid}.",
+                    })
+                return RoleResult("scout", "COMPLETE",
+                    data={"candidates_found": 4, "candidates": candidates},
+                    provenance=[c["url"] for c in candidates])
+
+        class _StubClerk(RecordsClerkRole):
+            def __call__(self, ctx_view):
+                _StubClerk.called = getattr(_StubClerk, 'called', 0) + 1
+                normalized = []
+                for c in ctx_view.get("source_candidates", []):
+                    normalized.append({
+                        "source_id": c.get("id", c.get("source_id", "")),
+                        "url": c.get("url", ""),
+                        "author_handle": c.get("author_handle", "unknown"),
+                        "content_type": c.get("content_type", "unknown"),
+                        "untrusted": True,
+                        "observed_at": "2026-01-01T00:00:00Z",
+                        "content_excerpt": c.get("content_excerpt", ""),
+                        "raw_content": c.get("raw_content", ""),
+                        "paraphrase": "",
+                        "provenance": [c.get("url", "")],
+                    })
+                return RoleResult("records_clerk", "COMPLETE",
+                    data={"normalized": normalized})
+
+        class _StubEA(EvidenceAnalystRole):
+            def __call__(self, ctx_view):
+                _StubEA.called = getattr(_StubEA, 'called', 0) + 1
+                return RoleResult("evidence_analyst", "COMPLETE", data={
+                    "accepted": [
+                        {"source_id": f"s{i}", "claim_id": f"c{i}",
+                         "claim_kind": "assertion",
+                         "span_ids": [f"s{i}/span/0"]} for i in range(3)
+                    ],
+                    "rejected": [],
+                })
+
         class _SpyDirector(AgencyDirectorRole):
             def __call__(self, ctx_view):
-                call_log.append("director_called")
+                director_calls.append(1)
                 return RoleResult("agency_director", "COMPLETE",
-                                  data={"disposition": "RECORD_ONLY"})
+                    data={"disposition": "RECORD_ONLY"})
+
         reg = build_role_registry()
+        reg["scout"] = _StubScout()
+        reg["records_clerk"] = _StubClerk()
+        reg["evidence_analyst"] = _StubEA()
         reg["agency_director"] = _SpyDirector()
+
         class _P(RepoStateProvider):
             def current_sha(self): return sha
             def origin_main_sha(self): return sha
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
-                                  role_registry=reg)
-        # Set up 4 sources with raw sources and candidates
-        candidates = []
-        for i in range(4):
-            sid = f"s{i}"
-            orch.ctx.set_raw_source(sid, "", "a", "comment",
-                                    "Claim text for testing purposes.")
-            candidates.append({
-                "id": sid, "url": "", "author_handle": "a",
-                "content_type": "comment", "untrusted": True,
-                "content_excerpt": "Claim text for testing purposes.",
-            })
-        orch.ctx.set_source_candidates(candidates)
-        orch.ctx.status = "running"
-        # Simulate EA completing with 3 accepted, s3 unaccounted
-        ea_result = RoleResult(
-            "evidence_analyst", "COMPLETE",
-            data={
-                "accepted": [{"source_id": f"s{i}", "claim_id": f"c{i}",
-                              "claim_kind": "assertion",
-                              "span_ids": [f"s{i}/span/0"]} for i in range(3)],
-                "rejected": [],
-            },
-        )
-        orch._apply_result("evidence_analyst", ea_result)
-        assert orch.ctx.status == "failed"
-        assert len(call_log) == 0  # Director never called
-        assert orch.ctx.decisions == []
-        assert orch.ctx.accepted_evidence == []
-        assert not orch.ctx.events.has_event_type("SOURCE_ACCEPTED")
-        assert orch.ctx.incidents[0]["description"] == (
+        orch = AgencyOrchestrator(
+            base_sha=sha, repo_provider=_P(), role_registry=reg,
+            campaign={"active_inquiry": "t", "objective": "Test",
+                      "internal_author_handles": ["hermes-sankhya-25"]})
+        orch.ctx.set_evidence_index(set())
+        ctx = orch.run()
+
+        assert ctx.status == "failed"
+        assert getattr(_StubScout, 'called', 0) == 1
+        assert getattr(_StubClerk, 'called', 0) == 1
+        assert getattr(_StubEA, 'called', 0) == 1
+        assert len(director_calls) == 0
+
+        assert ctx.decisions == []
+        assert ctx.accepted_evidence == []
+        assert not ctx.events.has_event_type("SOURCE_ACCEPTED")
+
+        assert len(ctx.incidents) == 1
+        assert ctx.incidents[0]["severity"] == "high"
+        assert ctx.incidents[0]["description"] == (
             "Evidence Analyst source accounting: unaccounted source_id: s3")
+
+        assert ctx.events.has_event_type("ROLE_COMPLETED")
+        assert ctx.events.has_event_type("RUN_CLOSED")
+        assert not ctx.events.has_event_type("DIRECTOR_DECISION")
 
     # -- validation order --
 
