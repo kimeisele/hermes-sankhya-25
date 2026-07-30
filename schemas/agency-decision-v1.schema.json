@@ -26,7 +26,8 @@
           "minItems": 0,
           "items": {
             "type": "object",
-            "required": ["finding_id", "statement", "source_ids", "reasoning", "finding_kind", "source_quotes"],
+            "required": ["finding_id", "statement", "source_ids", "reasoning", "finding_kind", "source_quotes",
+                         "source_basis", "distinct_author_count", "distinct_external_author_count"],
             "additionalProperties": false,
             "properties": {
               "finding_id": {"type": "string", "minLength": 1},

@@ -235,11 +235,18 @@ class EvidenceAnalystRole:
         for c in candidates:
             if c.get("untrusted") is True:
                 cid = c.get("id") or c.get("source_id", "")
+                excerpt = c.get("content_excerpt", "")
+                if not excerpt.strip():
+                    rejected.append({
+                        "source_id": cid,
+                        "reason": "empty content_excerpt",
+                    })
+                    continue
                 accepted.append({
                     "source_id": cid,
                     "claim_id": f"det-{cid[:12]}",
                     "claim_kind": "unknown",
-                    "claim_text": c.get("content_excerpt", "")[:200],
+                    "claim_text": excerpt,
                 })
         return RoleResult(self.ROLE, "COMPLETE",
                           data={"accepted": accepted, "rejected": rejected,

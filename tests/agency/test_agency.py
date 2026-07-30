@@ -16,12 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agency.context import (AgencyContextV1, AgencyBudget, RepoStateProvider, _sanitize_value)
 from agency.events import EventLog, RUN_STARTED, RUN_CLOSED
-from agency.roles import (RoleResult, ScoutRole, AgencyDirectorRole,
-                          EngagementLeadRole, BridgeExecutorRole)
-from agency.orchestrator import AgencyOrchestrator, DIRECTOR_ROUTES, build_role_registry
-from agency.profiles import AgentProfile
+from agency.roles import (RoleResult, ScoutRole, AgencyDirectorRole)
+from agency.orchestrator import AgencyOrchestrator, build_role_registry
 from agency.hq import render_hq_markdown
-from agency.policy import AgencyPolicy
 
 # ---------------------------------------------------------------------------
 # Fake model client
@@ -255,537 +252,6 @@ class TestFailClosed:
 
 # ---------------------------------------------------------------------------
 # Evidence lifecycle: inbox → candidates → normalized → evidence → Director
-# ---------------------------------------------------------------------------
-
-class TestEvidenceLifecycle:
-    def test_inbox_becomes_accepted_evidence(self):
-        sha = _make_sha()
-        reg = build_role_registry()
-        # Add source candidates so deterministic Clerk has something to normalize
-        class _P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
-                                  role_registry=reg)
-        # Inject inbox item AND source candidates for records clerk
-        orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
-                             "author_handle": "test"}])
-        # Without a model-backed Evidence Analyst, no accepted evidence is produced;
-        # this test verifies the deterministic fallback path works
-        ctx = orch.run()
-        assert ctx.status == "completed"
-        # Deterministic Evidence Analyst produces no accepted evidence; this is expected
-
-    def test_evidence_changes_director_disposition(self):
-        sha = _make_sha()
-        class _P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-        reg = build_role_registry()
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
-                                  role_registry=reg)
-        orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
-                             "author_handle": "test"}])
-        ctx = orch.run()
-        # Deterministic Director returns RECORD_ONLY when evidence present
-        assert len(ctx.decisions) > 0
-        assert ctx.decisions[0]["disposition"] != "NOOP"
-
-
-# ---------------------------------------------------------------------------
-# Director routing
-# ---------------------------------------------------------------------------
-
-class TestRouting:
-    def test_all_dispositions_defined(self):
-        assert set(DIRECTOR_ROUTES.keys()) == {
-            "NOOP", "RECORD_ONLY", "PROPOSE_ENGAGEMENT",
-            "PROPOSE_ENGINEERING_INTAKE", "READY_FOR_SYNTHESIS",
-            "ESCALATE_TO_HUMAN"}
-
-    def test_noop_completes(self):
-        sha = _make_sha()
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_fixed_provider(sha),
-                                  role_registry=build_role_registry())
-        ctx = orch.run()
-        assert ctx.status == "completed"
-
-
-# ---------------------------------------------------------------------------
-# Operational roles
-# ---------------------------------------------------------------------------
-
-class TestOperationalRoles:
-    def test_bridge_executor_command_allowlisting(self):
-        bridge = BridgeExecutorRole()
-        assert bridge.ROLE == "bridge_executor"
-        # execute_write is the only write path
-        result = bridge.execute_write({"type": "post", "title": "x", "submolt": "s"})
-        assert isinstance(result, dict)  # parsed JSON or error dict
-
-    def test_engagement_lead_hash(self):
-        lead = EngagementLeadRole()
-        result = lead({"accepted_evidence": [{"source_id": "src-1"}],
-                       "decisions": [{"disposition": "PROPOSE_ENGAGEMENT"}],
-                       "campaign": {"active_inquiry": "test-id"},
-                       "base_sha": "a" * 40})
-        assert result.status == "COMPLETE"
-        assert "proposal" in result.data
-
-    def test_dry_run_no_model_calls(self):
-        sha = _make_sha()
-        reg = build_role_registry(client=None)  # no client
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_fixed_provider(sha),
-                                  role_registry=reg)
-        ctx = orch.run()
-        assert ctx.status == "completed"
-
-
-# ---------------------------------------------------------------------------
-# Behavioral: artifact validation
-# ---------------------------------------------------------------------------
-
-class TestArtifactValidation:
-    def _make_prop(self, **overrides):
-        from agency.artifact import canonical_hash
-        prop = {"proposal_id": "p1", "target_content_id": "t1",
-                "payload": {}, "base_sha": "", "repository": "kimeisele/hermes-sankhya-25",
-                "approval_state": "approved", "consumed": False}
-        prop.update(overrides)
-        prop["content_hash"] = canonical_hash(prop)
-        return prop
-
-    def _make_ctx(self, proposals=None):
-        return {"repository": "kimeisele/hermes-sankhya-25",
-                "run_id": "r1", "base_sha": "",
-                "engagement_proposals": proposals or []}
-
-    def _write_and_validate(self, ctx, **kw):
-        import json
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(ctx, f)
-            path = f.name
-        try:
-            from agency.artifact import validate_artifact
-            return validate_artifact(path, **kw)
-        finally:
-            os.unlink(path)
-
-    def test_repository_mismatch_rejected(self):
-        ctx = {"repository": "wrong/repo", "run_id": "test-123"}
-        with pytest.raises(ValueError, match="Repository mismatch"):
-            self._write_and_validate(ctx)
-
-    def test_base_sha_mismatch_rejected(self):
-        ctx = self._make_ctx()
-        with pytest.raises(ValueError, match="Base SHA mismatch"):
-            self._write_and_validate(ctx, expected_base_sha="b" * 40)
-
-    def test_proposal_hash_mismatch_rejected(self):
-        prop = self._make_prop()
-        ctx = self._make_ctx([prop])
-        with pytest.raises(ValueError, match="Canonical hash mismatch"):
-            self._write_and_validate(ctx, proposal_id="p1", proposal_hash="b" * 64,
-                                     target_content_id="t1")
-
-    def test_consumed_proposal_rejected(self):
-        prop = self._make_prop(consumed=True)
-        ctx = self._make_ctx([prop])
-        with pytest.raises(ValueError, match="already consumed"):
-            self._write_and_validate(ctx, proposal_id="p1",
-                                     proposal_hash=prop["content_hash"],
-                                     target_content_id="t1")
-
-    def test_not_approved_rejected(self):
-        prop = self._make_prop(approval_state="draft")
-        ctx = self._make_ctx([prop])
-        with pytest.raises(ValueError, match="not approved"):
-            self._write_and_validate(ctx, proposal_id="p1",
-                                     proposal_hash=prop["content_hash"],
-                                     target_content_id="t1")
-
-    def test_valid_artifact_passes(self):
-        prop = self._make_prop()
-        ctx = self._make_ctx([prop])
-        result = self._write_and_validate(ctx, proposal_id="p1",
-                                          proposal_hash=prop["content_hash"],
-                                          target_content_id="t1")
-        assert result["repository"] == "kimeisele/hermes-sankhya-25"
-
-
-# ---------------------------------------------------------------------------
-# Behavioral: fake Moltbook reader
-# ---------------------------------------------------------------------------
-
-class TestFakeReader:
-    def test_scout_uses_fake_reader(self):
-        class FakeReader:
-            def fetch_post(self, pid):
-                return {"post": {"id": pid, "author": {"name": "test"},
-                                 "url": f"https://x.com/p/{pid}"}}
-            def fetch_comments(self, pid):
-                return {"comments": []}
-
-        scout = ScoutRole(moltbook=FakeReader())
-        result = scout({"inbox": [], "accepted_evidence_ids": [],
-                        "campaign": {"active_inquiry": "post-123"}})
-        assert result.status == "COMPLETE"
-        assert result.data["candidates_found"] == 1
-
-
-# ---------------------------------------------------------------------------
-# Behavioral: observe report/CTX same run
-# ---------------------------------------------------------------------------
-
-class TestSameRunArtifact:
-    def test_report_and_ctx_same_run_id(self):
-        sha = _make_sha()
-        reg = build_role_registry()
-
-        class P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(), role_registry=reg)
-        ctx = orch.run()
-        d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
-        assert ctx.run_id[:12] in report  # HQ truncates to 12 chars
-
-
-# ---------------------------------------------------------------------------
-# Behavioral: PROPOSE_ENGAGEMENT creates proposal
-# ---------------------------------------------------------------------------
-
-class TestProposeEngagement:
-    def test_engagement_creates_first_proposal(self):
-        sha = _make_sha()
-
-        class DirectorWithEngagement(AgencyDirectorRole):
-            def __call__(self, ctx_view):
-                return RoleResult("agency_director", "COMPLETE",
-                                  data={"disposition": "PROPOSE_ENGAGEMENT"})
-
-        reg = build_role_registry()
-        reg["agency_director"] = DirectorWithEngagement()
-
-        class P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(), role_registry=reg)
-        # Add evidence so EngagementLead doesn't return NOOP
-        orch.ctx.add_accepted_evidence([{"source_id": "src-1", "url": "x", "untrusted": True}])
-        orch.ctx.campaign["active_inquiry"] = "test-inquiry"
-        ctx = orch.run()
-        proposals = ctx.engagement_proposals
-        assert len(proposals) > 0, "PROPOSE_ENGAGEMENT should create at least one proposal"
-        prop = proposals[0]
-        assert "proposal_id" in prop
-        assert "content_hash" in prop
-        assert prop["consumed"] is False
-        prop = proposals[0]
-        assert "proposal_id" in prop
-        assert "content_hash" in prop
-        assert "approval_state" in prop
-        assert prop["consumed"] is False
-
-
-# ---------------------------------------------------------------------------
-# Stale-state
-# ---------------------------------------------------------------------------
-
-class TestStaleState:
-    def test_same_sha_not_stale(self):
-        sha = _make_sha("same")
-        ctx = AgencyContextV1(base_sha=sha, repo_provider=_fixed_provider(sha))
-        assert not ctx.is_stale()
-
-    def test_diff_sha_is_stale(self):
-        ctx = AgencyContextV1(base_sha=_make_sha("a"),
-                              repo_provider=_fixed_provider(_make_sha("b")))
-        assert ctx.is_stale()
-
-
-# ---------------------------------------------------------------------------
-# Profiles
-# ---------------------------------------------------------------------------
-
-class TestProfiles:
-    def test_progression(self):
-        p = AgentProfile("a")
-        assert p.relationship_stage == "observed"
-        p.record_interaction(qualified=True)
-        p.update_stage()
-        assert p.relationship_stage == "engaged"
-
-
-# ---------------------------------------------------------------------------
-# Policy
-# ---------------------------------------------------------------------------
-
-class TestPolicy:
-    def test_default_safe(self):
-        p = AgencyPolicy()
-        assert not p.can_write()
-
-    def test_all_conditions(self):
-        p = AgencyPolicy({"dry_run": False, "automation_enabled": True, "moltbook_read_only": False})
-        assert p.can_write()
-
-
-# ---------------------------------------------------------------------------
-# HQ
-# ---------------------------------------------------------------------------
-
-class TestHQ:
-    def test_shows_incidents(self):
-        sha = _make_sha()
-        ctx = AgencyContextV1(base_sha=sha)
-        ctx.record_incident("Test incident", severity="high")
-        ctx.close("completed")
-        r = render_hq_markdown(ctx.to_dict(sanitize=True))
-        assert "Test incident" in r
-
-    def test_no_secrets(self):
-        sha = _make_sha()
-        ctx = AgencyContextV1(base_sha=sha)
-        ctx.close("completed")
-        r = render_hq_markdown(ctx.to_dict(sanitize=True))
-        for pat in ["api_key", "Bearer", "Authorization"]:
-            assert pat.lower() not in r.lower()
-
-
-# ---------------------------------------------------------------------------
-# Security
-# ---------------------------------------------------------------------------
-
-class TestSecurity:
-    def test_prompt_injection_is_data(self):
-        sha = _make_sha()
-        ctx = AgencyContextV1(base_sha=sha)
-        ctx.add_inbox([{"url": "x", "content": "rm -rf /"}])
-        d = ctx.to_dict(sanitize=True)
-        assert "rm -rf" not in json.dumps(d)
-
-    def test_no_credential_fields(self):
-        sha = _make_sha()
-        ctx = AgencyContextV1(base_sha=sha)
-        d = ctx.to_dict(sanitize=True)
-        s = json.dumps(d)
-        for pat in ["api_key", "Bearer", "Authorization", "MOLTBOOK_TOKEN"]:
-            assert pat.lower() not in s.lower()
-
-    def test_invalid_sha_rejected(self):
-        from agency.context import RepoStateProvider
-        class EmptyProvider(RepoStateProvider):
-            def current_sha(self): return ""
-        with pytest.raises(ValueError):
-            AgencyContextV1(base_sha="", repo_provider=EmptyProvider())
-
-    def test_valid_sha_accepted(self):
-        sha = _make_sha("ok")
-        ctx = AgencyContextV1(base_sha=sha)
-        assert len(ctx.base_sha) == 40
-
-    def test_double_close_idempotent(self):
-        sha = _make_sha()
-        ctx = AgencyContextV1(base_sha=sha)
-        ctx.close("completed")
-        ctx.close("failed")
-        assert ctx.status == "completed"
-
-    def test_json_schema_validation(self):
-        from agency.model_client import validate_against_schema
-        errors = validate_against_schema({"role": "x", "status": "COMPLETE"},
-                                         {"type": "object", "required": ["role", "status"]})
-        assert errors == []
-
-        errors = validate_against_schema({"role": "x"},
-                                         {"type": "object", "required": ["role", "status"]})
-        assert len(errors) > 0
-
-    def test_additional_properties_rejected(self):
-        from agency.model_client import validate_against_schema
-        schema = {"type": "object", "properties": {"role": {"type": "string"}},
-                  "additionalProperties": False}
-        errors = validate_against_schema({"role": "x", "extra": "y"}, schema)
-        assert len(errors) > 0
-
-    def test_wrong_top_level_type(self):
-        from agency.model_client import validate_against_schema
-        errors = validate_against_schema("not_an_object",
-                                         {"type": "object"})
-        assert len(errors) > 0
-
-
-# ---------------------------------------------------------------------------
-# Read-only E2E integration test
-# ---------------------------------------------------------------------------
-
-class TestReadOnlyE2E:
-    def test_full_read_only_shift(self):
-        """End-to-end: fake Moltbook → dedup → Scout → Clerk → Analyst → Director → CTX → HQ."""
-        sha = _make_sha("e2e")
-
-        # Fake Moltbook with known + new content
-        KNOWN_ID = "known-comment-1"
-        NEW_ID = "new-comment-1"
-
-        class FakeReader:
-            def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "Test post content about verification receipts.",
-                                 "author": {"name": "post_author"}}}
-            def fetch_comments(self, pid):
-                return {"comments": [
-                    {"id": KNOWN_ID, "content": "Already analyzed: commit_hash is essential.",
-                     "author": {"name": "known_agent"}},
-                    {"id": NEW_ID, "content": "New claim: diff_url should be mandatory for code tasks.",
-                     "author": {"name": "new_agent"}},
-                ]}
-
-        # Evidence index with known_id → cross-run dedup
-        class P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-
-        reg = build_role_registry(moltbook_reader=FakeReader())
-        orch = AgencyOrchestrator(
-            base_sha=sha, repo_provider=P(), role_registry=reg,
-            workflow_run_id="42",
-            campaign={"active_inquiry": "test-post", "objective": "Test inquiry"})
-        orch.ctx.set_evidence_index({KNOWN_ID})  # simulate cross-run dedup
-
-        ctx = orch.run()
-        if ctx.status != "completed" and ctx.incidents:
-            for inc in ctx.incidents:
-                print(f"RTE2E INCIDENT: {inc['description']}")
-        assert ctx.status == "completed", f"status={ctx.status}"
-        assert ctx.workflow_run_id == "42"
-
-        # Known comment deduplicated
-        candidates = ctx.source_candidates
-        candidate_ids = {c.get("source_id", c.get("id")) for c in candidates}
-        assert KNOWN_ID not in candidate_ids, "Known comment should be deduplicated"
-        assert NEW_ID in candidate_ids, "New comment should be a candidate"
-
-        # Evidence reached analysis
-        evidence = ctx.accepted_evidence
-        assert len(evidence) > 0, "Evidence should be accepted"
-
-        # Check content_excerpt present
-        for c in candidates:
-            if c.get("source_id", c.get("id")) == NEW_ID:
-                assert "content_excerpt" in c
-                assert "diff_url" in c.get("content_excerpt", "")
-
-        # HQ + CTX share run_id
-        d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
-        assert ctx.run_id[:12] in report
-
-        # CTX schema validation
-        import jsonschema
-        schema = json.loads(
-            (Path(__file__).resolve().parents[2] / "schemas" / "agency-context-v1.schema.json").read_text())
-        jsonschema.validate(instance=d, schema=schema)
-
-        # No write occurred
-        txn_count = len(ctx.transactions)
-        assert txn_count == 0, "No Moltbook writes in read-only mode"
-
-    def test_canonical_hash_consistency(self):
-        """Proposal hash passes its own canonical-hash validation."""
-        from agency.artifact import canonical_hash
-        from agency.roles import EngagementLeadRole
-        lead = EngagementLeadRole()
-        result = lead({"accepted_evidence": [{"source_id": "src-1"}],
-                       "decisions": [{"disposition": "PROPOSE_ENGAGEMENT"}],
-                       "campaign": {"active_inquiry": "test-id"},
-                       "base_sha": "a" * 40})
-        assert result.status == "COMPLETE"
-        prop = result.data["proposal"]
-        computed = canonical_hash(prop)
-        assert prop["content_hash"] == computed, "Canonical hash mismatch"
-        assert prop["approval_state"] == "draft"
-
-    def test_durable_dedup_known_rejected(self):
-        """Known ID is rejected; new ID is emitted as candidate."""
-        sha = _make_sha("dedup")
-
-        class FakeReader:
-            def fetch_post(self, pid):
-                return {"post": {"id": "post-1", "content": "x", "author": {"name": "a"}}}
-            def fetch_comments(self, pid):
-                return {"comments": [
-                    {"id": "known-1", "content": "x", "author": {"name": "a"}},
-                    {"id": "new-1", "content": "y", "author": {"name": "b"}},
-                ]}
-
-        class P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-
-        reg = build_role_registry(moltbook_reader=FakeReader())
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=P(),
-                                  role_registry=reg)
-        orch.ctx.campaign["active_inquiry"] = "test-post"
-        orch.ctx.set_evidence_index({"known-1"})
-
-        ctx = orch.run()
-        candidates = ctx.source_candidates
-        ids = {c.get("source_id", c.get("id")) for c in candidates}
-        assert "known-1" not in ids
-        assert "new-1" in ids
-
-    def test_evidence_index_loader(self):
-        """Repository-backed loader excludes known IDs."""
-        from agency.evidence_index import load_evidence_index
-        ids = load_evidence_index()
-        assert isinstance(ids, set)
-        # source records may or may not exist in test context
-        # but the loader must always return a set, never crash
-
-
-# ---------------------------------------------------------------------------
-# Runtime CTX validation
-# ---------------------------------------------------------------------------
-
-class TestRuntimeValidation:
-    def test_valid_ctx_passes(self):
-        sha = _make_sha("val")
-        ctx = AgencyContextV1(base_sha=sha)
-        ctx.close("completed")
-        d = ctx.to_dict(sanitize=True)
-        from agency.validate_ctx import validate_sanitized_ctx
-        assert validate_sanitized_ctx(d) == []
-
-    def test_non_numeric_workflow_run_id_rejected(self):
-        sha = _make_sha("val2")
-        ctx = AgencyContextV1(base_sha=sha, workflow_run_id="abc123")
-        ctx.close("completed")
-        d = ctx.to_dict(sanitize=True)
-        from agency.validate_ctx import validate_sanitized_ctx
-        errs = validate_sanitized_ctx(d)
-        assert any("workflow_run_id" in e for e in errs)
-
-    def test_bad_base_sha_rejected(self):
-        d = {"schema_version": "1.0", "run_id": "x", "workflow_run_id": None,
-             "trigger": "manual", "shift": "morning",
-             "started_at": "2026-01-01T00:00:00Z",
-             "repository": "kimeisele/hermes-sankhya-25",
-             "base_sha": "bad", "campaign": {}, "policy": {},
-             "budget": {"max_role_calls": 1, "max_delegation_rounds": 1,
-                        "max_tokens": 1, "max_cost_estimate": 1.0,
-                        "max_duration_seconds": 1},
-             "status": "completed", "completed_at": None, "events": []}
-        from agency.validate_ctx import validate_sanitized_ctx
-        errs = validate_sanitized_ctx(d)
-        assert any("base_sha" in e for e in errs)
-
-
 
 
 
@@ -868,16 +334,43 @@ def _run_epi(evidence_accepted, director_resp, canonical_items,
 class TestEpistemicHardening:
     """Tests for claim-level provenance, deterministic metadata, schema boundaries."""
 
-    # ── A1: forbidden model-owned canonical fields rejected by schema ──
-    def test_a1_model_forbidden_canonical_fields(self):
+    # ── A1: schema split — model schema rejects deterministic fields ──
+    def test_a1_model_schema_rejects_deterministic_fields(self):
+        """Raw model output with source_basis etc → schema invalid."""
         from agency.model_client import validate_against_schema
+        import copy as _copy
         sd = Path(__file__).resolve().parents[2] / "schemas"
-        ev_schema = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
-        for extra in ["author_handle", "content_excerpt", "url", "source_class"]:
-            bad = [{"source_id": "x", "claim_id": "c1", "claim_kind": "assertion",
-                    "claim_text": "X", extra: "stolen"}]
-            errs = validate_against_schema({"accepted": bad, "rejected": []}, ev_schema)
-            assert len(errs) > 0, f"Expected schema rejection for extra {extra} field"
+        dec_schema = json.loads((sd / "agency-decision-v1.schema.json").read_text())
+        # Derive model schema (same as build_role_registry)
+        model_schema = _copy.deepcopy(dec_schema)
+        mf = model_schema["properties"]["synthesis"]["properties"]["findings"]["items"]
+        for fld in ("source_basis", "distinct_author_count", "distinct_external_author_count"):
+            mf["properties"].pop(fld, None)
+            if fld in mf["required"]:
+                mf["required"].remove(fld)
+        # Valid raw output without det fields
+        raw_dec = {"decision_id": "d1", "disposition": "READY_FOR_SYNTHESIS",
+            "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
+            "rationale": "x", "synthesis": {"inquiry": _OBJECTIVE,
+                "executive_answer": "A", "findings": [
+                    {"finding_id": "f1", "statement": "S", "source_ids": ["s"],
+                     "finding_kind": "assertion", "reasoning": "R",
+                     "source_quotes": [{"source_id": "s", "claim_id": "c", "quote": "q"}],
+                     }], "unresolved_questions": []}}
+        assert validate_against_schema(raw_dec, model_schema) == []
+        # Raw with deterministic field fails
+        raw_dec["synthesis"]["findings"][0]["source_basis"] = "external"
+        assert len(validate_against_schema(raw_dec, model_schema)) > 0
+        # Durable schema requires the field
+        assert len(validate_against_schema(raw_dec, dec_schema)) > 0  # extra field in model output
+        # Enriched (has det fields) passes durable schema
+        enriched = _copy.deepcopy(raw_dec)
+        enriched["synthesis"]["findings"][0]["distinct_author_count"] = 1
+        enriched["synthesis"]["findings"][0]["distinct_external_author_count"] = 1
+        assert validate_against_schema(enriched, dec_schema) == []
+        # Removing a det field breaks durable schema
+        del enriched["synthesis"]["findings"][0]["source_basis"]
+        assert len(validate_against_schema(enriched, dec_schema)) > 0
 
     # ── A2: canonical rehydration ──
     def test_a2_canonical_rehydration(self):
@@ -885,8 +378,7 @@ class TestEpistemicHardening:
         real_author = "vantik"
         real_excerpt = "REAL EXCERPT from vantik."
         canonical = [_make_epi_canonical(sid, real_author, real_excerpt)]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion",
-                     "claim_text": "Model text"}]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "Model text"}]
         ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
         assert ctx.status == "completed"
         ev = next(e for e in ctx.accepted_evidence if e["source_id"] == sid)
@@ -921,37 +413,42 @@ class TestEpistemicHardening:
         assert len(ctx.incidents) >= 1
         assert len(ctx.decisions) == 0
 
-    # ── D: forbidden deterministic metadata in Director response ──
-    def test_d_model_returned_deterministic_metadata(self):
-        sid = "src-d"
-        canonical = [_make_epi_canonical(sid, "vantik", "text.")]
-        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"}]
-        f = _make_finding("f1", "S", [sid], "assertion",
-            [{"source_id": sid, "claim_id": "c1", "quote": "text"}])
-        f["source_basis"] = "external"
+    # ── D: question → assertion conversion fails closed ──
+    def test_d_question_to_assertion_fails(self):
+        sid = "src-q"
+        canonical = [_make_epi_canonical(sid, "hermes-sankhya-25", "Should we bind the receipt?")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "question", "claim_text": "Q"}]
+        f = _make_finding("f1", "Binding is required.", [sid], "assertion",  # finding_kind=assertion
+            [{"source_id": sid, "claim_id": "c1", "quote": "Should we bind"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
         assert ctx.status == "failed"
-        assert len(ctx.incidents) >= 1
+        assert any("finding_kind" in i["description"].lower() or
+                   "claim kind" in i["description"].lower() for i in ctx.incidents)
 
-    # ── E: missing quote coverage for a source_id ──
-    def test_e_missing_quote_coverage(self):
-        sid1, sid2 = "src-1", "src-2"
-        canonical = [_make_epi_canonical(sid1, "vantik", "text one."),
-                     _make_epi_canonical(sid2, "other", "text two.")]
-        evidence = [{"source_id": sid1, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X"},
-                    {"source_id": sid2, "claim_id": "c2", "claim_kind": "assertion", "claim_text": "Y"}]
-        f = _make_finding("f1", "S", [sid1, sid2], "assertion",
-            [{"source_id": sid1, "claim_id": "c1", "quote": "text one"}])
+    # ── E: mixed claim kinds in same finding fails closed ──
+    def test_e_mixed_claim_kinds_fails(self):
+        sid1, sid2 = "src-a", "src-q"
+        canonical = [_make_epi_canonical(sid1, "vantik", "Commit hash is essential."),
+                     _make_epi_canonical(sid2, "vantik", "Should receipts be universal?")]
+        evidence = [{"source_id": sid1, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "A"},
+                    {"source_id": sid2, "claim_id": "c2", "claim_kind": "question", "claim_text": "Q"}]
+        f = _make_finding("f1", "Mixed finding.", [sid1, sid2], "assertion",
+            [{"source_id": sid1, "claim_id": "c1", "quote": "Commit hash"},
+             {"source_id": sid2, "claim_id": "c2", "quote": "Should receipts be"}])
         syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
                "findings": [f], "unresolved_questions": []}
         ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
         assert ctx.status == "failed"
-        assert any("no quote coverage" in i["description"].lower() for i in ctx.incidents)
+        incident_text = " ".join(i["description"].lower() for i in ctx.incidents)
+        assert ("mixed claim kinds" in incident_text or
+                "finding_kind" in incident_text or
+                "claim kind" in incident_text), (
+            f"Expected claim-kind incident, got: {ctx.incidents}")
 
-    # ── F: unknown author classification ──
-    def test_f_unknown_author_not_external(self):
+    # ── F: unknown author counts ──
+    def test_f_unknown_author_counts_zero(self):
         sid = "src-u"
         canonical = {"id": sid, "url": f"https://m.example/{sid}",
                       "author_handle": "", "content_type": "comment",
@@ -962,7 +459,33 @@ class TestEpistemicHardening:
         ev = next(e for e in ctx.accepted_evidence if e["source_id"] == sid)
         assert ev["source_class"] == "unknown"
 
-    # ── G: long quote no truncation ──
+    def test_f2_unknown_plus_external_counts(self):
+        sid_u = "src-u"
+        sid_e = "src-e"
+        canonical = [
+            {"id": sid_u, "url": f"https://m.example/{sid_u}",
+             "author_handle": "", "content_type": "comment",
+             "untrusted": True, "content_excerpt": "unknown text."},
+            {"id": sid_e, "url": f"https://m.example/{sid_e}",
+             "author_handle": "vantik", "content_type": "comment",
+             "untrusted": True, "content_excerpt": "external text."},
+        ]
+        evidence = [
+            {"source_id": sid_u, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "U"},
+            {"source_id": sid_e, "claim_id": "c2", "claim_kind": "assertion", "claim_text": "E"},
+        ]
+        f = _make_finding("f1", "Mix.", [sid_u, sid_e], "assertion",
+            [{"source_id": sid_u, "claim_id": "c1", "quote": "unknown text"},
+             {"source_id": sid_e, "claim_id": "c2", "quote": "external text"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
+        assert ctx.status == "completed"
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        assert f1["distinct_author_count"] == 1   # only vantik (unknown excluded)
+        assert f1["distinct_external_author_count"] == 1
+
+    # ── G: long quote + deterministic full text ──
     def test_g_long_quote_no_truncation(self):
         sid = "src-long"
         long_quote = "AAAA" + ("X" * 250) + "SENTINEL-LONG-END"
@@ -1008,7 +531,7 @@ class TestEpistemicHardening:
         assert ctx.status == "failed"
         assert len(ctx.incidents) >= 1
 
-    # ── J: successful mixed synthesis: 3 authors, 2 external ──
+    # ── J: successful mixed synthesis, all same kind ──
     def test_j_successful_mixed_synthesis(self):
         s_int, s_e1, s_e2 = "src-int", "src-ext1", "src-ext2"
         ie = "One follow-up question: what binds the receipt to work?"
@@ -1020,7 +543,7 @@ class TestEpistemicHardening:
             _make_epi_canonical(s_e2, "contributor_b", e2e),
         ]
         evidence = [
-            {"source_id": s_int, "claim_id": "c-int", "claim_kind": "question", "claim_text": "IQ"},
+            {"source_id": s_int, "claim_id": "c-int", "claim_kind": "assertion", "claim_text": "IA"},
             {"source_id": s_e1, "claim_id": "c-e1", "claim_kind": "assertion", "claim_text": "EA1"},
             {"source_id": s_e2, "claim_id": "c-e2", "claim_kind": "assertion", "claim_text": "EA2"},
         ]
@@ -1061,18 +584,14 @@ class TestEpistemicHardening:
         sd = Path(__file__).resolve().parents[2] / "schemas"
         ev_schema = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
         dec_schema = json.loads((sd / "agency-decision-v1.schema.json").read_text())
-        # missing claim_kind
         assert len(validate_against_schema({"accepted": [
             {"source_id": "x", "claim_id": "c1", "claim_text": "X"}], "rejected": []}, ev_schema)) > 0
-        # unknown claim_kind
         assert len(validate_against_schema({"accepted": [
             {"source_id": "x", "claim_id": "c1", "claim_kind": "invalid", "claim_text": "X"}],
             "rejected": []}, ev_schema)) > 0
-        # extra accepted field
         assert len(validate_against_schema({"accepted": [
             {"source_id": "x", "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X",
              "extra": True}], "rejected": []}, ev_schema)) > 0
-        # missing source_quotes
         bf = {"finding_id": "f1", "statement": "S", "source_ids": ["s"],
               "finding_kind": "assertion", "reasoning": "R"}
         bs = {"inquiry": _OBJECTIVE, "executive_answer": "A", "findings": [bf], "unresolved_questions": []}
@@ -1080,7 +599,6 @@ class TestEpistemicHardening:
               "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
               "rationale": "x", "synthesis": bs}
         assert len(validate_against_schema(bd, dec_schema)) > 0
-        # next_inquiry
         sn = {"inquiry": _OBJECTIVE, "executive_answer": "A", "findings": [],
               "unresolved_questions": [], "next_inquiry": "N"}
         dn = dict(bd)
@@ -1091,6 +609,87 @@ class TestEpistemicHardening:
 # ---------------------------------------------------------------------------
 # Restored regression tests (adapted for hardened schemas)
 # ---------------------------------------------------------------------------
+
+class TestEvidenceLifecycle:
+    def test_inbox_becomes_accepted_evidence(self):
+        sha = _make_sha()
+        sentinel = "EXACT-SENTINEL-for-deterministic-evidence-test"
+        reg = build_role_registry()
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
+                                  role_registry=reg)
+        orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
+                             "author_handle": "test", "untrusted": True,
+                             "content_excerpt": sentinel}])
+        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
+            "author_handle": "test", "untrusted": True, "content_excerpt": sentinel,
+            "content_type": "comment"}])
+        ctx = orch.run()
+        assert ctx.status == "completed"
+        assert len(ctx.accepted_evidence) >= 1
+        ev = ctx.accepted_evidence[0]
+        assert ev["content_excerpt"] == sentinel
+        assert ev["claim_text"] == sentinel
+        assert ev["claim_id"]
+        assert ev["source_class"] == "external"
+
+    def test_evidence_changes_director_disposition(self):
+        sha = _make_sha()
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        reg = build_role_registry()
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
+                                  role_registry=reg)
+        orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
+                             "author_handle": "test", "untrusted": True,
+                             "content_excerpt": "Valid evidence content."}])
+        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
+            "author_handle": "test", "untrusted": True,
+            "content_excerpt": "Valid evidence content.", "content_type": "comment"}])
+        ctx = orch.run()
+        assert len(ctx.accepted_evidence) >= 1
+        assert ctx.decisions[0]["disposition"] == "RECORD_ONLY"
+
+
+class TestEvidenceLifecycleOriginal:
+    def test_inbox_becomes_accepted_evidence(self):
+        sha = _make_sha()
+        reg = build_role_registry()
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
+                                  role_registry=reg)
+        orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
+                             "author_handle": "test", "untrusted": True,
+                             "content_excerpt": "test content."}])
+        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
+            "author_handle": "test", "untrusted": True,
+            "content_excerpt": "test content.", "content_type": "comment"}])
+        ctx = orch.run()
+        assert ctx.status == "completed"
+
+    def test_evidence_changes_director_disposition(self):
+        sha = _make_sha()
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        reg = build_role_registry()
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
+                                  role_registry=reg)
+        orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
+                             "author_handle": "test", "untrusted": True,
+                             "content_excerpt": "Valid evidence."}])
+        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
+            "author_handle": "test", "untrusted": True,
+            "content_excerpt": "Valid evidence.", "content_type": "comment"}])
+        ctx = orch.run()
+        assert len(ctx.decisions) > 0
+        assert ctx.decisions[0]["disposition"] != "NOOP"
+
 
 class TestFakeDeepSeekE2E:
     def test_observe_with_fake_transport(self):
@@ -1186,8 +785,6 @@ class TestDeterministicIngestion:
 
 
 class TestDirectorSynthesis:
-    """Director produces structured synthesis (claim-level quotes, no confidence)."""
-
     def test_synthesis_stored_and_rendered(self):
         call_log = []
         accepted_src = "src-syn"

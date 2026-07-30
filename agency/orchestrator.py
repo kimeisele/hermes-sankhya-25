@@ -62,6 +62,19 @@ def build_role_registry(client: DeepSeekClient | None = None,
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or "You extract claims and classify evidence.",
                                             evidence_schema, is_write_critical=False)
+        # Derive Director model-output schema from committed durable schema.
+        # The model must not produce deterministic metadata fields.
+        import copy as _copy
+        _finding_props = list(decision_schema["properties"]["synthesis"]
+                              ["properties"]["findings"]["items"]["properties"].keys())
+        _finding_req = list(decision_schema["properties"]["synthesis"]
+                            ["properties"]["findings"]["items"]["required"])
+        _model_schema = _copy.deepcopy(decision_schema)
+        _model_finding = _model_schema["properties"]["synthesis"]["properties"]["findings"]["items"]
+        for _field in ("source_basis", "distinct_author_count", "distinct_external_author_count"):
+            _model_finding["properties"].pop(_field, None)
+            if _field in _model_finding["required"]:
+                _model_finding["required"].remove(_field)
         pro_adapter = RoleModelAdapter(client, client.pro_model,
                                        pro_system or (
             "You are a source-grounded research synthesizer, not an engineering "
@@ -73,7 +86,7 @@ def build_role_registry(client: DeepSeekClient | None = None,
             "a requirement. Never invent a solution. Never recommend "
             "implementation work. Never select the next inquiry. Unresolved "
             "questions must describe missing evidence, not prescribe action."),
-                                       decision_schema, is_write_critical=True)
+                                       _model_schema, is_write_critical=True)
         engagement_adapter = RoleModelAdapter(client, client.pro_model,
                                               pro_system or "You draft engagement proposals.",
                                               engagement_schema, is_write_critical=True)
@@ -284,6 +297,9 @@ class AgencyOrchestrator:
                         return "NOOP"
 
                 quoted_src_ids: set[str] = set()
+                # Claim-kind fidelity: all referenced claims must have same claim_kind,
+                # and finding_kind must match.
+                claim_kinds: set[str] = set()
                 for sq in finding.get("source_quotes", []):
                     q_src = sq.get("source_id", "")
                     q_claim = sq.get("claim_id", "")
@@ -324,6 +340,27 @@ class AgencyOrchestrator:
                         self.ctx.close("failed")
                         return "NOOP"
                     quoted_src_ids.add(q_src)
+                    claim_kinds.add(ac_ev.get("claim_kind", "unknown"))
+
+                # Claim-kind fidelity enforcement
+                if len(claim_kinds) > 1:
+                    self.ctx.record_incident(
+                        f"Finding {finding.get('finding_id','?')}: "
+                        f"mixed claim kinds {sorted(claim_kinds)} — "
+                        f"all quoted claims must have the same claim_kind",
+                        severity="high")
+                    self.ctx.close("failed")
+                    return "NOOP"
+                if claim_kinds:
+                    actual_kind = next(iter(claim_kinds))
+                    if finding.get("finding_kind") != actual_kind:
+                        self.ctx.record_incident(
+                            f"Finding {finding.get('finding_id','?')}: "
+                            f"finding_kind '{finding.get('finding_kind')}' "
+                            f"does not match claim kind '{actual_kind}'",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
 
                 # Every finding source_id must have at least one quote
                 for src_id in finding.get("source_ids", []):
@@ -393,7 +430,9 @@ class AgencyOrchestrator:
         for ev in self.ctx.accepted_evidence:
             sid = ev.get("source_id", "")
             if sid in finding.get("source_ids", []):
-                authors.add(ev.get("author_handle", ""))
+                ah = ev.get("author_handle", "")
+                if ah and ah != "unknown":
+                    authors.add(ah)
         return len(authors)
 
     def _count_distinct_external_authors(self, finding: dict[str, Any]) -> int:
