@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agency.context import (AgencyContextV1, AgencyBudget, RepoStateProvider, _sanitize_value)
 from agency.events import EventLog, RUN_STARTED, RUN_CLOSED
-from agency.roles import (RoleResult, ScoutRole, AgencyDirectorRole)
+from agency.roles import (RoleResult, ScoutRole, RecordsClerkRole,
+                         EvidenceAnalystRole, AgencyDirectorRole)
 from agency.orchestrator import AgencyOrchestrator, build_role_registry
 from agency.hq import render_hq_markdown
 
@@ -317,14 +318,24 @@ def _run_epi(evidence_accepted, director_resp, canonical_items,
             msgs = payload.get("messages", [])
             sys = msgs[0]["content"] if msgs else ""
             if "extract claims" in sys.lower() or "classify" in sys.lower():
-                return _ev_resp(evidence_accepted)
+                # Include a rejected entry for the fixture post (id "t")
+                # which is always present as a model-facing source.
+                rejected = [{"source_id": "t",
+                             "reason": "fixture post outside canonical evidence set"}]
+                return _ev_resp(evidence_accepted, rejected=rejected)
             return director_resp
 
     client = DeepSeekClient(transport=_Tx())
 
     class _R:
         def fetch_post(self, pid):
-            return {"post": {"id": pid, "content": "body", "author": {"name": "op"}}}
+            return {
+                "post": {
+                    "id": pid,
+                    "content": "body",
+                    "author": {"name": "op"},
+                }
+            }
         def fetch_comments(self, pid):
             return {"comments": [{"id": c["id"], "content": c["content_excerpt"],
                      "author": {"name": c["author_handle"]}} for c in canonical_items]}
@@ -719,13 +730,22 @@ class TestFakeDeepSeekE2E:
                 return {"choices": [{"message": {"content": json.dumps({
                     "accepted": [{"source_id": "new-claim-1", "claim_id": "c1",
                      "claim_kind": "assertion", "span_ids": ["new-claim-1/span/0"]}],
-                    "rejected": []})}}],
+                    "rejected": [
+                        {"source_id": "test-post",
+                         "reason": "fixture post has no claim required by this test"},
+                    ]})}}],
                     "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
         from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "Test content.", "author": {"name": "post_author"}}}
+                return {
+                    "post": {
+                        "id": pid,
+                        "content": "Test content.",
+                        "author": {"name": "post_author"},
+                    }
+                }
             def fetch_comments(self, pid):
                 return {"comments": [{"id": "new-claim-1",
                     "content": "commit_hash is essential", "author": {"name": "test_agent"}}]}
@@ -766,7 +786,13 @@ class TestDeterministicIngestion:
         client = DeepSeekClient(transport=_Tx())
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "body", "author": {"name": "op"}}}
+                return {
+                    "post": {
+                        "id": pid,
+                        "content": "body",
+                        "author": {"name": "op"},
+                    }
+                }
             def fetch_comments(self, pid):
                 return {"comments": [{"id": "c-1", "content": sentinel, "author": {"name": "vantik"}}]}
         reg = build_role_registry(client=client, moltbook_reader=_R())
@@ -877,14 +903,23 @@ class TestDirectorFailClosed:
                     return {"choices": [{"message": {"content": json.dumps({
                         "accepted": [{"source_id": accepted_src, "claim_id": "c1",
                          "claim_kind": "assertion", "span_ids": [f"{accepted_src}/span/0"]}],
-                        "rejected": []})}}],
+                        "rejected": [
+                            {"source_id": "t",
+                             "reason": "fixture post has no claim required by this test"},
+                        ]})}}],
                         "usage": {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80}}
                 raise RuntimeError(raw_error)
         from agency.model_client import DeepSeekClient
         client = DeepSeekClient(transport=_Tx())
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+                return {
+                    "post": {
+                        "id": pid,
+                        "content": "post",
+                        "author": {"name": "op"},
+                    }
+                }
             def fetch_comments(self, pid):
                 return {"comments": [{"id": accepted_src, "content": "receipt evidence",
                          "author": {"name": "vantik"}}]}
@@ -1042,7 +1077,13 @@ class TestEAFailClosed:
 
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post", "author": {"name": "op"}}}
+                return {
+                    "post": {
+                        "id": pid,
+                        "content": "post",
+                        "author": {"name": "op"},
+                    }
+                }
             def fetch_comments(self, pid):
                 return {"comments": [
                     {"id": "src-1", "content": "Evidence text.",
@@ -1691,3 +1732,348 @@ class TestSourceFidelity:
         ev = ctx.accepted_evidence[0]
         assert ev["source_content_hash"] == "abc123"
         assert ev["span_ids"] == ["s1/span/0"]
+
+
+# ---------------------------------------------------------------------------
+# Source-accounting contract tests
+# ---------------------------------------------------------------------------
+
+class TestSourceAccounting:
+    """Structural source-accounting validation for Evidence Analyst output."""
+
+    # -- helpers --
+    @staticmethod
+    def _acct_setup(input_sources, accepted, rejected):
+        """Build orchestrator with sources, create RoleResult, call _apply_result."""
+        sha = _make_sha("acct")
+        reg = build_role_registry()
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(),
+                                  role_registry=reg)
+        candidates = []
+        for src in input_sources:
+            orch.ctx.set_raw_source(
+                src["source_id"], src.get("url", ""),
+                src.get("author_handle", "unknown"),
+                src.get("content_type", "comment"),
+                src.get("text", "placeholder claim text for testing."),
+            )
+            candidates.append({
+                "id": src["source_id"],
+                "url": src.get("url", ""),
+                "author_handle": src.get("author_handle", "unknown"),
+                "content_type": src.get("content_type", "comment"),
+                "untrusted": True,
+                "content_excerpt": src.get("text", "placeholder claim text for testing."),
+            })
+        orch.ctx.set_source_candidates(candidates)
+        orch.ctx.status = "running"
+        result = RoleResult(
+            "evidence_analyst",
+            "COMPLETE",
+            data={
+                "accepted": accepted,
+                "rejected": rejected,
+            },
+        )
+        orch._apply_result("evidence_analyst", result)
+        return orch
+
+    # -- success cases --
+
+    def test_all_sources_accepted(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."},
+                {"source_id": "s2", "author_handle": "b", "text": "B."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+                      {"source_id": "s2", "claim_id": "c2", "claim_kind": "assertion", "span_ids": ["s2/span/0"]}],
+            rejected=[],
+        )
+        assert orch.ctx.status != "failed"
+        assert len(orch.ctx.incidents) == 0
+        assert len(orch.ctx.accepted_evidence) == 2
+        assert orch.ctx.events.has_event_type("SOURCE_ACCEPTED")
+
+    def test_mix_accepted_and_rejected_all_accounted(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."},
+                {"source_id": "s2", "author_handle": "b", "text": "B."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[{"source_id": "s2", "reason": "no relevant claim"}],
+        )
+        assert orch.ctx.status != "failed"
+        assert len(orch.ctx.incidents) == 0
+        assert len(orch.ctx.accepted_evidence) == 1
+        assert orch.ctx.events.has_event_type("SOURCE_ACCEPTED")
+
+    def test_multiple_accepted_claims_for_one_source(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+                      {"source_id": "s1", "claim_id": "c2", "claim_kind": "question", "span_ids": ["s1/span/0"]}],
+            rejected=[],
+        )
+        assert orch.ctx.status != "failed"
+        assert len(orch.ctx.incidents) == 0
+        assert len(orch.ctx.accepted_evidence) == 2
+        assert orch.ctx.events.has_event_type("SOURCE_ACCEPTED")
+
+    def test_b001_shaped_accounting(self):
+        srcs = [{"source_id": f"s{i}", "author_handle": "a", "text": "Claim text for testing purposes."} for i in range(6)]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": f"s{i}", "claim_id": f"c{i}", "claim_kind": "assertion", "span_ids": [f"s{i}/span/0"]} for i in range(3)],
+            rejected=[{"source_id": f"s{i}", "reason": "duplicate"} for i in range(3, 6)],
+        )
+        assert orch.ctx.status != "failed"
+        assert len(orch.ctx.incidents) == 0
+        assert len(orch.ctx.accepted_evidence) == 3
+        # Check SOURCE_ACCEPTED event data
+        sa_events = [e for e in orch.ctx.events.to_list()
+                     if e["event_type"] == "SOURCE_ACCEPTED"]
+        assert len(sa_events) == 1
+        assert sa_events[0]["data"]["accepted"] == 3
+        assert sa_events[0]["data"]["rejected"] == 3
+
+    # -- failure cases --
+
+    _ERR_UNKNOWN_ACC = (
+        "Evidence Analyst source accounting: unknown accepted source_id: FAKE")
+    _ERR_UNKNOWN_REJ = (
+        "Evidence Analyst source accounting: unknown rejected source_id: FAKE")
+    _ERR_DUP_REJ = (
+        "Evidence Analyst source accounting: duplicate rejected source_id: s1")
+    _ERR_CONFLICT = (
+        "Evidence Analyst source accounting: source_id present in both "
+        "accepted and rejected: s1")
+    _ERR_UNACCOUNTED = (
+        "Evidence Analyst source accounting: unaccounted source_id: s2")
+
+    def _assert_fail(self, orch, expected_error):
+        assert orch.ctx.status == "failed"
+        assert orch.ctx.accepted_evidence == []
+        assert len(orch.ctx.incidents) == 1
+        assert orch.ctx.incidents[0]["severity"] == "high"
+        assert orch.ctx.incidents[0]["description"] == expected_error
+        assert not orch.ctx.events.has_event_type("SOURCE_ACCEPTED")
+
+    def test_unknown_accepted_source_id(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+                      {"source_id": "FAKE", "claim_id": "c2", "claim_kind": "assertion", "span_ids": ["FAKE/span/0"]}],
+            rejected=[],
+        )
+        self._assert_fail(orch, self._ERR_UNKNOWN_ACC)
+
+    def test_unknown_rejected_source_id(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[{"source_id": "FAKE", "reason": "bad"}],
+        )
+        self._assert_fail(orch, self._ERR_UNKNOWN_REJ)
+
+    def test_duplicate_rejected_entries(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[],
+            rejected=[{"source_id": "s1", "reason": "r1"},
+                      {"source_id": "s1", "reason": "r2"}],
+        )
+        self._assert_fail(orch, self._ERR_DUP_REJ)
+
+    def test_source_in_accepted_and_rejected(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[{"source_id": "s1", "reason": "bad"}],
+        )
+        self._assert_fail(orch, self._ERR_CONFLICT)
+
+    def test_source_absent_from_both_arrays(self):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "A."},
+                {"source_id": "s2", "author_handle": "b", "text": "B."}]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+            rejected=[],
+        )
+        self._assert_fail(orch, self._ERR_UNACCOUNTED)
+
+    def test_b007_shaped_accounting(self):
+        srcs = [{"source_id": f"s{i}", "author_handle": "a", "text": "Claim text here."} for i in range(4)]
+        orch = self._acct_setup(
+            srcs,
+            accepted=[{"source_id": f"s{i}", "claim_id": f"c{i}", "claim_kind": "assertion", "span_ids": [f"s{i}/span/0"]} for i in range(3)],
+            rejected=[],
+        )
+        self._assert_fail(orch,
+            "Evidence Analyst source accounting: unaccounted source_id: s3")
+
+    # -- Director-stop integration test (full orch.run path) --
+
+    def test_director_not_called_on_accounting_failure(self):
+        """Unaccounted source → FAIL_CLOSED before Director, via orch.run()."""
+        sha = _make_sha("dir-stop")
+        director_calls = []
+
+        # Stub roles
+        class _StubScout(ScoutRole):
+            def __call__(self, ctx_view):
+                _StubScout.called = getattr(_StubScout, 'called', 0) + 1
+                candidates = []
+                for i in range(4):
+                    sid = f"s{i}"
+                    candidates.append({
+                        "id": sid,
+                        "url": f"https://example.invalid/{sid}",
+                        "author_handle": "fixture-author",
+                        "content_type": "comment",
+                        "untrusted": True,
+                        "content_excerpt": f"Canonical claim for {sid}.",
+                        "raw_content": f"Canonical claim for {sid}.",
+                    })
+                return RoleResult("scout", "COMPLETE",
+                    data={"candidates_found": 4, "candidates": candidates},
+                    provenance=[c["url"] for c in candidates])
+
+        class _StubClerk(RecordsClerkRole):
+            def __call__(self, ctx_view):
+                _StubClerk.called = getattr(_StubClerk, 'called', 0) + 1
+                normalized = []
+                for c in ctx_view.get("source_candidates", []):
+                    normalized.append({
+                        "source_id": c.get("id", c.get("source_id", "")),
+                        "url": c.get("url", ""),
+                        "author_handle": c.get("author_handle", "unknown"),
+                        "content_type": c.get("content_type", "unknown"),
+                        "untrusted": True,
+                        "observed_at": "2026-01-01T00:00:00Z",
+                        "content_excerpt": c.get("content_excerpt", ""),
+                        "raw_content": c.get("raw_content", ""),
+                        "paraphrase": "",
+                        "provenance": [c.get("url", "")],
+                    })
+                return RoleResult("records_clerk", "COMPLETE",
+                    data={"normalized": normalized})
+
+        class _StubEA(EvidenceAnalystRole):
+            def __call__(self, ctx_view):
+                _StubEA.called = getattr(_StubEA, 'called', 0) + 1
+                return RoleResult("evidence_analyst", "COMPLETE", data={
+                    "accepted": [
+                        {"source_id": f"s{i}", "claim_id": f"c{i}",
+                         "claim_kind": "assertion",
+                         "span_ids": [f"s{i}/span/0"]} for i in range(3)
+                    ],
+                    "rejected": [],
+                })
+
+        class _SpyDirector(AgencyDirectorRole):
+            def __call__(self, ctx_view):
+                director_calls.append(1)
+                return RoleResult("agency_director", "COMPLETE",
+                    data={"disposition": "RECORD_ONLY"})
+
+        reg = build_role_registry()
+        reg["scout"] = _StubScout()
+        reg["records_clerk"] = _StubClerk()
+        reg["evidence_analyst"] = _StubEA()
+        reg["agency_director"] = _SpyDirector()
+
+        class _P(RepoStateProvider):
+            def current_sha(self): return sha
+            def origin_main_sha(self): return sha
+        orch = AgencyOrchestrator(
+            base_sha=sha, repo_provider=_P(), role_registry=reg,
+            campaign={"active_inquiry": "t", "objective": "Test",
+                      "internal_author_handles": ["hermes-sankhya-25"]})
+        orch.ctx.set_evidence_index(set())
+        ctx = orch.run()
+
+        assert ctx.status == "failed"
+        assert getattr(_StubScout, 'called', 0) == 1
+        assert getattr(_StubClerk, 'called', 0) == 1
+        assert getattr(_StubEA, 'called', 0) == 1
+        assert len(director_calls) == 0
+
+        assert ctx.decisions == []
+        assert ctx.accepted_evidence == []
+        assert not ctx.events.has_event_type("SOURCE_ACCEPTED")
+
+        assert len(ctx.incidents) == 1
+        assert ctx.incidents[0]["severity"] == "high"
+        assert ctx.incidents[0]["description"] == (
+            "Evidence Analyst source accounting: unaccounted source_id: s3")
+
+        assert ctx.events.has_event_type("ROLE_COMPLETED")
+        assert ctx.events.has_event_type("RUN_CLOSED")
+        assert not ctx.events.has_event_type("DIRECTOR_DECISION")
+
+    # -- validation order --
+
+    @pytest.mark.parametrize("accepted,rejected,expected_error", [
+        # unknown accepted beats unknown rejected
+        ([{"source_id": "FAKE1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["FAKE1/span/0"]},
+          {"source_id": "s1", "claim_id": "c2", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+         [{"source_id": "FAKE2", "reason": "bad"}],
+         "Evidence Analyst source accounting: unknown accepted source_id: FAKE1"),
+        # unknown rejected beats duplicate rejected
+        ([{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]}],
+         [{"source_id": "FAKE", "reason": "r1"},
+          {"source_id": "FAKE", "reason": "r2"}],
+         "Evidence Analyst source accounting: unknown rejected source_id: FAKE"),
+        # duplicate rejected beats conflict
+        ([],
+         [{"source_id": "s1", "reason": "r1"},
+          {"source_id": "s1", "reason": "r2"}],
+         "Evidence Analyst source accounting: duplicate rejected source_id: s1"),
+        # conflict beats unaccounted
+        ([{"source_id": "s1", "claim_id": "c1", "claim_kind": "assertion", "span_ids": ["s1/span/0"]},
+          {"source_id": "s2", "claim_id": "c2", "claim_kind": "assertion", "span_ids": ["s2/span/0"]}],
+         [{"source_id": "s2", "reason": "conflict"}],
+         "Evidence Analyst source accounting: source_id present in both accepted and rejected: s2"),
+    ])
+    def test_validation_order(self, accepted, rejected, expected_error):
+        srcs = [{"source_id": "s1", "author_handle": "a", "text": "T1."},
+                {"source_id": "s2", "author_handle": "b", "text": "T2."}]
+        orch = self._acct_setup(srcs, accepted, rejected)
+        self._assert_fail(orch, expected_error)
+
+    # -- prompt contract --
+
+    def test_ea_prompt_contains_source_accounting(self):
+        """EA system prompt includes the source-accounting instruction."""
+        from agency.model_client import DeepSeekClient
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        ea = reg["evidence_analyst"]
+        prompt = ea._adapter.system_prompt
+        required = (
+            "Account for every input source. For each source, either return "
+            "one or more accepted claims or exactly one rejected entry "
+            "explaining why no objective-relevant claim was extracted. "
+            "Never place the same source_id in both accepted and rejected."
+        )
+        assert required in prompt, "Missing source-accounting instruction"
+        # Forbidden phrases
+        for forbidden in ("select at least one claim from every source",
+                          "cover every source with a claim",
+                          "maximize claim count"):
+            assert forbidden not in prompt, (
+                f"Forbidden phrase found in EA prompt: {forbidden}")
