@@ -70,7 +70,8 @@ def build_role_registry(client: DeepSeekClient | None = None,
 
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or "You extract claims and classify evidence.",
-                                            _ea_model_schema, is_write_critical=False)
+                                            _ea_model_schema, is_write_critical=False,
+                                            thinking_enabled=False)
         # Derive Director model-output schema from committed durable schema.
         # The model must not produce deterministic metadata fields.
         _finding_props = list(decision_schema["properties"]["synthesis"]

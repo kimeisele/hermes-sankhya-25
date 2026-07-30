@@ -85,7 +85,8 @@ class DeepSeekClient:
 
     def call(self, model: str, system: str, user_context: dict[str, Any],
              schema: dict[str, Any] | None = None,
-             temperature: float = 0.0) -> ModelCallResult:
+             temperature: float = 0.0,
+             thinking_enabled: bool | None = None) -> ModelCallResult:
         api_key = _get_api_key()
         if not api_key and not self._transport:
             return ModelCallResult(success=False, error="DEEPSEEK_API_KEY not set",
@@ -102,6 +103,10 @@ class DeepSeekClient:
         }
         if schema:
             payload["response_format"] = {"type": "json_object"}
+        if thinking_enabled is not None:
+            payload["thinking"] = {
+                "type": "enabled" if thinking_enabled else "disabled"
+            }
 
         try:
             resp = self._transport(payload) if self._transport else self._http_call(payload)
@@ -187,12 +192,14 @@ def validate_against_schema(instance: Any, schema: dict[str, Any]) -> list[str]:
 class RoleModelAdapter:
     def __init__(self, client: DeepSeekClient, model: str,
                  system_prompt: str, output_schema: dict[str, Any],
-                 is_write_critical: bool = False) -> None:
+                 is_write_critical: bool = False,
+                 thinking_enabled: bool | None = None) -> None:
         self.client = client
         self.model = model
         self.system_prompt = system_prompt
         self.output_schema = output_schema
         self.is_write_critical = is_write_critical
+        self.thinking_enabled = thinking_enabled
 
     def _build_prompt(self) -> str:
         """Build system instruction with embedded output schema."""
@@ -209,7 +216,8 @@ class RoleModelAdapter:
 
     def invoke(self, ctx_view: dict[str, Any]) -> ModelCallResult:
         prompt = self._build_prompt()
-        result = self.client.call(self.model, prompt, ctx_view, self.output_schema)
+        result = self.client.call(self.model, prompt, ctx_view, self.output_schema,
+                                  thinking_enabled=self.thinking_enabled)
         if result.success:
             return result
         if self.is_write_critical:
@@ -220,5 +228,6 @@ class RoleModelAdapter:
                 f"Previous output was invalid: {result.error}\n"
                 f"Produce valid JSON matching the schema."
             )
-            return self.client.call(self.model, repair, ctx_view, self.output_schema)
+            return self.client.call(self.model, repair, ctx_view, self.output_schema,
+                                    thinking_enabled=self.thinking_enabled)
         return result
