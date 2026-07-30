@@ -59,12 +59,20 @@ def build_role_registry(client: DeepSeekClient | None = None,
         audit_schema = json.loads((sd / "audit-output.schema.json").read_text())
         proposal_schema = json.loads((sd / "engineering-proposal-v1.schema.json").read_text())
 
+        import copy as _copy
+
+        # Reduced Evidence Analyst model-output schema.
+        # The committed schema permits optional claims, scores, and
+        # rationale that the orchestrator does not consume.
+        _ea_model_schema = _copy.deepcopy(evidence_schema)
+        for _field in ("claims", "scores", "rationale"):
+            _ea_model_schema["properties"].pop(_field, None)
+
         evidence_adapter = RoleModelAdapter(client, client.flash_model,
                                             flash_system or "You extract claims and classify evidence.",
-                                            evidence_schema, is_write_critical=False)
+                                            _ea_model_schema, is_write_critical=False)
         # Derive Director model-output schema from committed durable schema.
         # The model must not produce deterministic metadata fields.
-        import copy as _copy
         _finding_props = list(decision_schema["properties"]["synthesis"]
                               ["properties"]["findings"]["items"]["properties"].keys())
         _finding_req = list(decision_schema["properties"]["synthesis"]
