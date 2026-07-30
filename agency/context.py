@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import copy
 import datetime as _dt
+import hashlib
 import json
 import uuid as _uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,102 @@ def _sanitize_value(value: Any, key: str = "") -> Any:
     if isinstance(value, str) and _is_secret_key(key):
         return "[REDACTED]"
     return value
+
+
+# ---------------------------------------------------------------------------
+# Immutable source snapshot and span data
+# ---------------------------------------------------------------------------
+
+_MAX_SPAN_LENGTH = 1000
+
+
+@dataclass(frozen=True)
+class _FrozenSource:
+    """Immutable canonical source snapshot — write-once, never mutated."""
+    source_id: str
+    url: str
+    author_handle: str
+    content_type: str
+    raw_content: str
+    source_content_hash: str
+    ingested_at: str
+
+
+@dataclass(frozen=True)
+class _Span:
+    """A single contiguous text span within a source snapshot."""
+    span_id: str
+    source_id: str
+    source_content_hash: str
+    span_index: int
+    char_offset_start: int
+    char_offset_end: int
+    text: str
+
+
+def _segment_spans(source_id: str, source_content_hash: str,
+                   raw_content: str) -> tuple[_Span, ...]:
+    """Segment raw_content into deterministic non-overlapping spans.
+
+    Paragraphs are split at ``\\n\\n``.  Any paragraph longer than
+    ``_MAX_SPAN_LENGTH`` is further split at the nearest word boundary
+    before the limit.  No character is ever dropped or duplicated —
+    concatenating all span texts in index order recovers the original
+    ``raw_content`` byte-for-byte.
+    """
+    spans: list[_Span] = []
+    span_index = 0
+
+    paragraphs = raw_content.split("\n\n")
+    for pi, para in enumerate(paragraphs):
+        # Re-insert the "\n\n" separator for all but the first paragraph
+        if pi > 0:
+            para = "\n\n" + para
+
+        offset = sum(len(s.text) for s in spans)
+        remaining = para
+        while len(remaining) > _MAX_SPAN_LENGTH:
+            split_at = _MAX_SPAN_LENGTH
+            # Walk back to nearest word boundary (space or tab)
+            for k in range(_MAX_SPAN_LENGTH - 1, 0, -1):
+                if remaining[k] in (' ', '\t'):
+                    split_at = k + 1  # include the space
+                    break
+            chunk = remaining[:split_at]
+            if not chunk:
+                # Degenerate case — force split at limit
+                chunk = remaining[:_MAX_SPAN_LENGTH]
+                split_at = _MAX_SPAN_LENGTH
+            spans.append(_Span(
+                span_id=f"{source_id}/span/{span_index}",
+                source_id=source_id,
+                source_content_hash=source_content_hash,
+                span_index=span_index,
+                char_offset_start=offset,
+                char_offset_end=offset + len(chunk),
+                text=chunk,
+            ))
+            span_index += 1
+            offset += len(chunk)
+            remaining = remaining[split_at:]
+        if remaining:
+            spans.append(_Span(
+                span_id=f"{source_id}/span/{span_index}",
+                source_id=source_id,
+                source_content_hash=source_content_hash,
+                span_index=span_index,
+                char_offset_start=offset,
+                char_offset_end=offset + len(remaining),
+                text=remaining,
+            ))
+            span_index += 1
+
+    # Postcondition: concatenation recovers original
+    reconstructed = "".join(s.text for s in spans)
+    assert reconstructed == raw_content, (
+        f"Span segmentation lost or duplicated characters: "
+        f"expected {len(raw_content)}, got {len(reconstructed)}")
+    return tuple(spans)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +263,7 @@ class AgencyContextV1:
         "_transactions", "_incidents",
         "_audit", "status", "completed_at",
         "_event_log", "_repo_provider", "_evidence_index",
+        "_raw_sources", "_spans",
     )
 
     def __init__(self, trigger: str = "manual", shift: str = "morning",
@@ -198,6 +297,8 @@ class AgencyContextV1:
         self.policy = policy or {}
         self.budget = budget or AgencyBudget()
         self._evidence_index: set[str] = set()  # durable cross-run dedup IDs
+        self._raw_sources: dict[str, _FrozenSource] = {}
+        self._spans: dict[str, tuple[_Span, ...]] = {}
 
         # -- private collections (never exposed directly) --
         self._inbox: list[dict[str, Any]] = []
@@ -271,6 +372,40 @@ class AgencyContextV1:
     def audit(self) -> dict[str, Any]:
         return copy.deepcopy(self._audit)
 
+    # -- raw source & span management ------------------------------------
+
+    def set_raw_source(self, source_id: str, url: str,
+                       author_handle: str, content_type: str,
+                       raw_content: str) -> None:
+        """Store an immutable source snapshot and segment it into spans.
+
+        Must only be called once per source_id per run.  A second call
+        for the same source_id raises RuntimeError (FAIL_CLOSED).
+        """
+        if source_id in self._raw_sources:
+            raise RuntimeError(
+                f"Source snapshot {source_id} already ingested — "
+                f"cannot re-populate in the same run")
+        source_content_hash = hashlib.sha256(
+            raw_content.encode("utf-8")).hexdigest()
+        ingested_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        self._raw_sources[source_id] = _FrozenSource(
+            source_id=source_id, url=url, author_handle=author_handle,
+            content_type=content_type, raw_content=raw_content,
+            source_content_hash=source_content_hash,
+            ingested_at=ingested_at)
+        self._spans[source_id] = _segment_spans(
+            source_id, source_content_hash, raw_content)
+
+    @property
+    def raw_sources(self) -> dict[str, _FrozenSource]:
+        """Return a shallow copy — _FrozenSource is immutable."""
+        return dict(self._raw_sources)
+
+    def spans_for(self, source_id: str) -> tuple[_Span, ...]:
+        """Return spans for a source. Returns empty tuple if unknown."""
+        return self._spans.get(source_id, ())
+
     # -- mutation methods (append-only) ------------------------------------
 
     def add_inbox(self, items: list[dict[str, Any]]) -> None:
@@ -339,7 +474,12 @@ class AgencyContextV1:
         elif role == "records_clerk":
             base.update({"source_candidates": copy.deepcopy(self._source_candidates)})
         elif role == "evidence_analyst":
-            base.update({"source_candidates": copy.deepcopy(self._source_candidates)})
+            base.update({
+                "source_candidates": copy.deepcopy(self._source_candidates),
+                "spans": {sid: [{"span_id": s.span_id, "text": s.text}
+                                for s in spans]
+                          for sid, spans in self._spans.items()},
+            })
         elif role == "agency_director":
             base.update({
                 "accepted_evidence": copy.deepcopy(self._accepted_evidence),
@@ -430,6 +570,9 @@ class AgencyContextV1:
                 "transactions": copy.deepcopy(self._transactions),
                 "incidents": copy.deepcopy(self._incidents),
                 "audit": copy.deepcopy(self._audit),
+                "raw_sources": {sid: {"source_id": s.source_id,
+                                      "source_content_hash": s.source_content_hash}
+                                for sid, s in self._raw_sources.items()},
             })
         return d
 
