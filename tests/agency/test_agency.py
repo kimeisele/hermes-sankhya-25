@@ -1396,6 +1396,50 @@ class TestSourceFidelity:
         assert spans[1].text == "Second sentence."
         assert "".join(s.text for s in spans) == raw
 
+    def test_delimiter_pure_newline_source(self):
+        """Pure \\n\\n source → exactly one span."""
+        from agency.context import _segment_spans
+        raw = "\n\n"
+        spans = _segment_spans("src", "hash", raw)
+        assert len(spans) == 1
+        assert spans[0].text == "\n\n"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_repeated_separators(self):
+        """Repeated \\n\\n\\n\\n belongs to the preceding text."""
+        from agency.context import _segment_spans
+        raw = "Heading\n\n\n\nBody"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "Heading\n\n\n\n"
+        assert spans[1].text == "Body"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_leading_newlines(self):
+        """Leading \\n\\n belongs to the first textual span."""
+        from agency.context import _segment_spans
+        raw = "\n\nBody"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "\n\nBody"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_trailing_newlines(self):
+        """Trailing \\n\\n belongs to the last textual span."""
+        from agency.context import _segment_spans
+        raw = "Body\n\n"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "Body\n\n"
+        assert "".join(s.text for s in spans) == raw
+
+    def test_delimiter_mixed_boundaries(self):
+        """Mixed single and repeated separators."""
+        from agency.context import _segment_spans
+        raw = "A\n\n\n\nB\n\nC"
+        spans = _segment_spans("src", "hash", raw)
+        assert spans[0].text == "A\n\n\n\n"
+        assert spans[1].text == "B\n\n"
+        assert spans[2].text == "C"
+        assert "".join(s.text for s in spans) == raw
+
     def test_markdown_bold_preserved_in_span(self):
         """Markdown **bold** markers survive segmentation unchanged."""
         from agency.context import _segment_spans

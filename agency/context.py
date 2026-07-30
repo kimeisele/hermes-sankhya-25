@@ -86,7 +86,14 @@ def _segment_spans(source_id: str, source_content_hash: str,
                    raw_content: str) -> tuple[_Span, ...]:
     """Segment raw_content into deterministic non-overlapping spans.
 
-    Order: paragraph boundaries (``\\n\\n``) → sentence boundaries
+    A left-to-right scan finds paragraph boundaries (``\\n\\n``).
+    Each textual segment between boundaries is split into sentences.
+    Paragraph separators and any immediately following newlines belong
+    to the end of the preceding textual span.  Leading newlines (no
+    preceding text) belong to the first following textual span.
+    Pure-newline content produces exactly one span.
+
+    Order within each textual segment: sentence boundaries
     (``. ! ?`` followed by whitespace or end-of-text) → 1000-codepoint
     fallback split at last whitespace before limit.
 
@@ -97,27 +104,72 @@ def _segment_spans(source_id: str, source_content_hash: str,
     spans: list[_Span] = []
     span_index = 0
 
-    paragraphs = raw_content.split("\n\n")
-    for pi, para in enumerate(paragraphs):
-        # Split paragraph into sentences
-        units = _split_sentences(para)
+    # Left-to-right scan for \n\n boundaries
+    n = len(raw_content)
+    seg_start = 0
+    pending_sep = ""  # accumulated separators for next text segment
+    i = 0
+    while i <= n:
+        # Look for \n\n at current position
+        if i <= n - 2 and raw_content[i:i + 2] == "\n\n":
+            # Consume this separator and any immediately following newlines
+            j = i + 2
+            while j < n and raw_content[j] == "\n":
+                j += 1
+            # Emit text from seg_start to i (the text before the separator)
+            text_segment = raw_content[seg_start:i]
+            # The separator block
+            sep_block = raw_content[i:j]
 
-        for ui, unit in enumerate(units):
+            if text_segment:
+                # Text exists — split into sentences, attach sep to last unit.
+                # Prepend any pending separator from earlier newlines.
+                units = _split_sentences(text_segment)
+                if pending_sep and units:
+                    units[0] = pending_sep + units[0]
+                    pending_sep = ""
+                for ui, unit in enumerate(units):
+                    if not unit:
+                        continue
+                    if ui == len(units) - 1:
+                        unit = unit + sep_block
+                    _emit_unit(source_id, source_content_hash, unit,
+                               spans, span_index)
+                    span_index = len(spans)
+            else:
+                # No preceding text — accumulate separator for next segment
+                pending_sep += sep_block
+
+            seg_start = j
+            i = j
+        else:
+            i += 1
+
+    # Emit remaining text after last separator
+    remaining = raw_content[seg_start:]
+    if pending_sep:
+        remaining = pending_sep + remaining
+    if remaining:
+        units = _split_sentences(remaining)
+        for unit in units:
             if not unit:
                 continue
-            # Append paragraph separator to the last unit of this paragraph
-            # (not the first unit of the next paragraph)
-            if ui == len(units) - 1 and pi < len(paragraphs) - 1:
-                unit = unit + "\n\n"
             _emit_unit(source_id, source_content_hash, unit,
                        spans, span_index)
             span_index = len(spans)
 
+    # If nothing was emitted (pure-newline content → one span)
+    if not spans and raw_content:
+        _emit_unit(source_id, source_content_hash, raw_content,
+                   spans, 0)
+
     # Postcondition: concatenation recovers original
     reconstructed = "".join(s.text for s in spans)
-    assert reconstructed == raw_content, (
-        f"Span segmentation lost or duplicated characters: "
-        f"expected {len(raw_content)}, got {len(reconstructed)}")
+    if reconstructed != raw_content:
+        raise RuntimeError(
+            f"Span segmentation lost or duplicated characters "
+            f"for source {source_id}: "
+            f"expected {len(raw_content)} chars, got {len(reconstructed)}")
     return tuple(spans)
 
 
