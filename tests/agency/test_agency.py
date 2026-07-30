@@ -1077,3 +1077,108 @@ class TestEAFailClosed:
 
         assert result.status == "NOOP", f"Expected NOOP, got {result.status}"
         assert model_calls == 0, f"Expected 0 model calls, got {model_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Evidence Analyst: minimized model-output contract
+# ---------------------------------------------------------------------------
+
+class TestEAContract:
+    """The model-facing Evidence Analyst schema must only expose
+    'accepted' and 'rejected' — the orch does not consume the other
+    optional fields."""
+
+    def test_model_facing_schema_has_only_accepted_and_rejected(self):
+        """Build the real registry and inspect the EA adapter schema."""
+        from agency.model_client import DeepSeekClient
+
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        ea = reg["evidence_analyst"]
+        schema = ea._adapter.output_schema
+
+        # Top-level properties
+        assert set(schema["properties"].keys()) == {"accepted", "rejected"}, (
+            f"Expected only accepted/rejected, got {sorted(schema['properties'].keys())}")
+        # Required
+        assert schema["required"] == ["accepted", "rejected"]
+        # additionalProperties is removed from model-facing schema
+        # (retained only on committed schema)
+
+        # Accepted item contract unchanged
+        acc_props = schema["properties"]["accepted"]["items"]["properties"]
+        acc_req = schema["properties"]["accepted"]["items"]["required"]
+        assert set(acc_req) == {"source_id", "claim_id", "claim_kind", "claim_text"}
+        assert "claim_kind" in acc_props
+        assert acc_props["claim_kind"]["enum"] == ["assertion", "opinion", "proposal",
+                                                    "question", "warning", "unknown"]
+
+        # Rejected item contract unchanged
+        rej_req = schema["properties"]["rejected"]["items"]["required"]
+        assert set(rej_req) == {"source_id", "reason"}
+
+    def test_adapter_prompt_does_not_contain_removed_fields(self):
+        """The serialized model schema must not mention claims, scores, or rationale."""
+        from agency.model_client import DeepSeekClient
+
+        class _Tx:
+            def __call__(self, payload):
+                return {"choices": [{"message": {"content": "{}"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                  "total_tokens": 2}}
+
+        client = DeepSeekClient(transport=_Tx())
+        reg = build_role_registry(client=client)
+        ea = reg["evidence_analyst"]
+
+        # Build the prompt the same way RoleModelAdapter does
+        prompt = ea._adapter._build_prompt()
+        import re
+        # The schema is embedded as the last JSON block in the prompt.
+        # Extract it and verify the top-level property names.
+        schema_text = re.search(r'\{.*\}', prompt, re.DOTALL)
+        assert schema_text, "No schema JSON found in prompt"
+        import json as _json
+        model_schema = _json.loads(schema_text.group())
+        assert set(model_schema.get("properties", {}).keys()) == {"accepted", "rejected"}, (
+            f"Prompt schema properties: {sorted(model_schema.get('properties', {}).keys())}")
+
+    def test_valid_response_with_only_accepted_and_rejected(self):
+        """A response with only accepted+rejected must succeed in one call."""
+        model_calls = 0
+
+        class _Tx:
+            def __call__(self, payload):
+                nonlocal model_calls
+                model_calls += 1
+                return {"choices": [{"message": {"content": json.dumps({
+                    "accepted": [
+                        {"source_id": "src-1", "claim_id": "claim-1",
+                         "claim_kind": "assertion", "claim_text": "Exact claim text."},
+                    ],
+                    "rejected": [],
+                })}}], "usage": {"prompt_tokens": 100, "completion_tokens": 50,
+                              "total_tokens": 150}}
+
+        # Use the real reduced schema from the registry
+        from agency.model_client import DeepSeekClient as _DS
+        client_ds = _DS(transport=_Tx())
+        reg = build_role_registry(client=client_ds)
+        ea = reg["evidence_analyst"]
+
+        result = ea({"source_candidates": [
+            {"id": "src-1", "author_handle": "vantik", "untrusted": True,
+             "content_excerpt": "Evidence text."},
+        ]})
+
+        assert result.status == "COMPLETE", f"Expected COMPLETE, got {result.status}: {result.fail_reason}"
+        assert model_calls == 1, f"Expected 1 call (no repair), got {model_calls}"
+        acc = result.data.get("accepted", [])
+        assert len(acc) == 1
+        assert acc[0]["claim_text"] == "Exact claim text."
