@@ -86,9 +86,11 @@ def _segment_spans(source_id: str, source_content_hash: str,
                    raw_content: str) -> tuple[_Span, ...]:
     """Segment raw_content into deterministic non-overlapping spans.
 
-    Paragraphs are split at ``\\n\\n``.  Any paragraph longer than
-    ``_MAX_SPAN_LENGTH`` is further split at the nearest word boundary
-    before the limit.  No character is ever dropped or duplicated —
+    Order: paragraph boundaries (``\\n\\n``) → sentence boundaries
+    (``. ! ?`` followed by whitespace or end-of-text) → 1000-codepoint
+    fallback split at last whitespace before limit.
+
+    No character or whitespace is ever dropped or duplicated —
     concatenating all span texts in index order recovers the original
     ``raw_content`` byte-for-byte.
     """
@@ -97,47 +99,18 @@ def _segment_spans(source_id: str, source_content_hash: str,
 
     paragraphs = raw_content.split("\n\n")
     for pi, para in enumerate(paragraphs):
-        # Re-insert the "\n\n" separator for all but the first paragraph
         if pi > 0:
             para = "\n\n" + para
 
-        offset = sum(len(s.text) for s in spans)
-        remaining = para
-        while len(remaining) > _MAX_SPAN_LENGTH:
-            split_at = _MAX_SPAN_LENGTH
-            # Walk back to nearest word boundary (space or tab)
-            for k in range(_MAX_SPAN_LENGTH - 1, 0, -1):
-                if remaining[k] in (' ', '\t'):
-                    split_at = k + 1  # include the space
-                    break
-            chunk = remaining[:split_at]
-            if not chunk:
-                # Degenerate case — force split at limit
-                chunk = remaining[:_MAX_SPAN_LENGTH]
-                split_at = _MAX_SPAN_LENGTH
-            spans.append(_Span(
-                span_id=f"{source_id}/span/{span_index}",
-                source_id=source_id,
-                source_content_hash=source_content_hash,
-                span_index=span_index,
-                char_offset_start=offset,
-                char_offset_end=offset + len(chunk),
-                text=chunk,
-            ))
-            span_index += 1
-            offset += len(chunk)
-            remaining = remaining[split_at:]
-        if remaining:
-            spans.append(_Span(
-                span_id=f"{source_id}/span/{span_index}",
-                source_id=source_id,
-                source_content_hash=source_content_hash,
-                span_index=span_index,
-                char_offset_start=offset,
-                char_offset_end=offset + len(remaining),
-                text=remaining,
-            ))
-            span_index += 1
+        # Split paragraph into sentences
+        units = _split_sentences(para)
+
+        for unit in units:
+            if not unit:
+                continue
+            _emit_unit(source_id, source_content_hash, unit,
+                       spans, span_index)
+            span_index = len(spans)
 
     # Postcondition: concatenation recovers original
     reconstructed = "".join(s.text for s in spans)
@@ -145,6 +118,76 @@ def _segment_spans(source_id: str, source_content_hash: str,
         f"Span segmentation lost or duplicated characters: "
         f"expected {len(raw_content)}, got {len(reconstructed)}")
     return tuple(spans)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text at sentence boundaries (``. ! ?`` + whitespace/end).
+
+    The whitespace following a sentence terminator belongs to the
+    preceding sentence.
+    """
+    result: list[str] = []
+    start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ('.', '!', '?'):
+            # Check if followed by whitespace or end-of-text
+            if i + 1 >= n or text[i + 1] in (' ', '\t', '\n', '\r'):
+                # Include trailing whitespace in this sentence
+                j = i + 1
+                while j < n and text[j] in (' ', '\t', '\n', '\r'):
+                    j += 1
+                result.append(text[start:j])
+                start = j
+                i = j
+                continue
+        i += 1
+    # Remaining text (no sentence terminator at end)
+    if start < n:
+        result.append(text[start:])
+    return result
+
+
+def _emit_unit(source_id: str, source_content_hash: str, text: str,
+               spans: list[_Span], span_index: int) -> None:
+    """Emit one or more spans for a text unit, splitting at max length."""
+    offset = sum(len(s.text) for s in spans)
+    remaining = text
+    while len(remaining) > _MAX_SPAN_LENGTH:
+        split_at = _MAX_SPAN_LENGTH
+        # Walk back to nearest whitespace boundary
+        for k in range(_MAX_SPAN_LENGTH - 1, 0, -1):
+            if remaining[k] in (' ', '\t', '\n', '\r'):
+                split_at = k + 1
+                break
+        chunk = remaining[:split_at]
+        if not chunk:
+            chunk = remaining[:_MAX_SPAN_LENGTH]
+            split_at = _MAX_SPAN_LENGTH
+        spans.append(_Span(
+            span_id=f"{source_id}/span/{span_index}",
+            source_id=source_id,
+            source_content_hash=source_content_hash,
+            span_index=span_index,
+            char_offset_start=offset,
+            char_offset_end=offset + len(chunk),
+            text=chunk,
+        ))
+        span_index += 1
+        offset += len(chunk)
+        remaining = remaining[split_at:]
+    if remaining:
+        spans.append(_Span(
+            span_id=f"{source_id}/span/{span_index}",
+            source_id=source_id,
+            source_content_hash=source_content_hash,
+            span_index=span_index,
+            char_offset_start=offset,
+            char_offset_end=offset + len(remaining),
+            text=remaining,
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -474,15 +517,36 @@ class AgencyContextV1:
         elif role == "records_clerk":
             base.update({"source_candidates": copy.deepcopy(self._source_candidates)})
         elif role == "evidence_analyst":
-            base.update({
-                "source_candidates": copy.deepcopy(self._source_candidates),
-                "spans": {sid: [{"span_id": s.span_id, "text": s.text}
-                                for s in spans]
-                          for sid, spans in self._spans.items()},
-            })
+            # Model-facing view: per-source metadata + spans only.
+            # No raw_content, content_excerpt, source_content_hash, offsets.
+            sources = []
+            for sc in self._source_candidates:
+                sid = sc.get("id") or sc.get("source_id", "")
+                src_spans = self._spans.get(sid, ())
+                if not src_spans:
+                    continue
+                sources.append({
+                    "source_id": sid,
+                    "author_handle": sc.get("author_handle", "unknown"),
+                    "content_type": sc.get("content_type", "unknown"),
+                    "url": sc.get("url", ""),
+                    "spans": [{"span_id": s.span_id, "text": s.text}
+                              for s in src_spans],
+                })
+            base.update({"sources": sources})
         elif role == "agency_director":
+            # Director sees only the public evidence fields, not internal
+            # runtime data (source_content_hash, span_ids, content_excerpt, etc.)
+            _DIRECTOR_EV_FIELDS = (
+                "source_id", "claim_id", "claim_kind", "claim_text",
+                "author_handle", "source_class", "content_type", "url",
+            )
+            filtered_evidence = [
+                {k: v for k, v in ev.items() if k in _DIRECTOR_EV_FIELDS}
+                for ev in self._accepted_evidence
+            ]
             base.update({
-                "accepted_evidence": copy.deepcopy(self._accepted_evidence),
+                "accepted_evidence": filtered_evidence,
                 "agent_profiles": copy.deepcopy(self._agent_profiles),
                 "decisions": copy.deepcopy(self._decisions),
                 "work_queue": list(self._work_queue),

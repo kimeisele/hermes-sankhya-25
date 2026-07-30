@@ -640,11 +640,8 @@ class TestEvidenceLifecycle:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": sentinel}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True, "content_excerpt": sentinel,
-            "content_type": "comment"}])
-        orch.ctx.set_raw_source("item1", "https://x.com/p/1", "test", "comment", sentinel)
+                             "content_excerpt": sentinel,
+                             "raw_content": sentinel}])
         ctx = orch.run()
         assert ctx.status == "completed"
         assert len(ctx.accepted_evidence) >= 1
@@ -664,12 +661,8 @@ class TestEvidenceLifecycle:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": "Valid evidence content."}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True,
-            "content_excerpt": "Valid evidence content.", "content_type": "comment"}])
-        orch.ctx.set_raw_source("item1", "https://x.com/p/1", "test", "comment",
-                                "Valid evidence content.")
+                             "content_excerpt": "Valid evidence content.",
+                             "raw_content": "Valid evidence content."}])
         ctx = orch.run()
         assert len(ctx.accepted_evidence) >= 1
         assert ctx.decisions[0]["disposition"] == "RECORD_ONLY"
@@ -686,12 +679,8 @@ class TestEvidenceLifecycleOriginal:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": "test content."}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True,
-            "content_excerpt": "test content.", "content_type": "comment"}])
-        orch.ctx.set_raw_source("item1", "https://x.com/p/1", "test", "comment",
-                                "test content.")
+                             "content_excerpt": "test content.",
+                             "raw_content": "test content."}])
         ctx = orch.run()
         assert ctx.status == "completed"
 
@@ -705,12 +694,8 @@ class TestEvidenceLifecycleOriginal:
                                   role_registry=reg)
         orch.ctx.add_inbox([{"id": "item1", "url": "https://x.com/p/1",
                              "author_handle": "test", "untrusted": True,
-                             "content_excerpt": "Valid evidence."}])
-        orch.ctx.set_source_candidates([{"id": "item1", "url": "https://x.com/p/1",
-            "author_handle": "test", "untrusted": True,
-            "content_excerpt": "Valid evidence.", "content_type": "comment"}])
-        orch.ctx.set_raw_source("item1", "https://x.com/p/1", "test", "comment",
-                                "Valid evidence.")
+                             "content_excerpt": "Valid evidence.",
+                             "raw_content": "Valid evidence."}])
         ctx = orch.run()
         assert len(ctx.decisions) > 0
         assert ctx.decisions[0]["disposition"] != "NOOP"
@@ -954,6 +939,8 @@ class TestDirectorContext:
             "untrusted": True,
             "content_excerpt": "CANONICAL_EXCERPT_FOR_TEST_12345",
         }])
+        ctx.set_raw_source("src-1", "https://m.example/src-1", "vantik",
+                           "comment", "CANONICAL_EXCERPT_FOR_TEST_12345")
         ctx.add_accepted_evidence([{
             "source_id": "src-1",
             "claim_id": "c1",
@@ -972,15 +959,22 @@ class TestDirectorContext:
         assert "accepted_evidence" in director_view
         assert len(director_view["accepted_evidence"]) == 1
         ev = director_view["accepted_evidence"][0]
-        assert ev["content_excerpt"] == "CANONICAL_EXCERPT_FOR_TEST_12345"
         assert ev["claim_id"] == "c1"
         assert ev["claim_kind"] == "assertion"
+        # Director view must not expose internal runtime fields
+        assert "source_content_hash" not in ev
+        assert "span_ids" not in ev
+        assert "content_excerpt" not in ev
 
         ea_view = ctx.view_for("evidence_analyst")
-        assert "source_candidates" in ea_view, (
-            "Evidence Analyst must receive source_candidates")
-        assert len(ea_view["source_candidates"]) == 1
-        assert ea_view["source_candidates"][0]["id"] == "src-1"
+        assert "sources" in ea_view, (
+            "Evidence Analyst must receive sources")
+        assert len(ea_view["sources"]) == 1
+        assert ea_view["sources"][0]["source_id"] == "src-1"
+        # EA view must not expose internal runtime fields
+        assert "source_candidates" not in ea_view
+        assert "raw_content" not in ea_view["sources"][0]
+        assert "content_excerpt" not in ea_view["sources"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -1495,3 +1489,139 @@ class TestSourceFidelity:
                      "span_ids": _ea_span_ids("src-dry")}]
         ctx = _run_epi(evidence, _dir_resp("RECORD_ONLY"), canonical)
         assert len(ctx.transactions) == 0
+
+    # ── B001 regression: quote-character mismatch eliminated ──
+    def test_b001_quote_punctuation_preserved(self):
+        """Source with double quotes → claim_text + injected quote preserve them."""
+        raw = 'That showed up earlier as "you can verify a well-formed lie."'
+        canonical = [_make_epi_canonical("src-b001", "hermes-sankhya-25", raw)]
+        # EA references the span containing the double-quoted text
+        evidence = [{"source_id": "src-b001", "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": _ea_span_ids("src-b001")}]
+        f = _make_finding("f1", "Well-formed lie warning.", ["src-b001"], "assertion",
+            [{"source_id": "src-b001", "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
+        assert ctx.status == "completed"
+        # Stored claim_text retains double quotes
+        ev = next(e for e in ctx.accepted_evidence if e["claim_id"] == "c1")
+        assert '"you can verify a well-formed lie."' in ev["claim_text"]
+        # Injected quote is identical to canonical text
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        injected = f1["source_quotes"][0]["quote"]
+        assert injected == raw
+        # No provenance incidents
+        assert len(ctx.incidents) == 0
+
+    # ── B007 regression: markdown bold + content beyond 500 chars ──
+    def test_b007_markdown_bold_and_long_content_preserved(self):
+        """Content with **markdown** beyond char 500 survives intact."""
+        # Build >700 chars with claim text after char 500
+        prefix = "Preamble text. " * 80  # ~1200 chars of filler
+        claim_text = "**Permission escalation patterns.** Not just 'agent ran sudo' — but when an agent gradually expands its own access over multiple steps."
+        raw = prefix + claim_text
+        assert len(raw) > 700
+        assert "**Permission escalation patterns.**" in raw
+        # The claim text starts well after char 500
+        assert raw.index("**Permission escalation patterns.**") > 500
+
+        canonical = [_make_epi_canonical("src-b007", "murphyhook", raw)]
+        # The claim spans across one or more spans — EA references them all
+        # Find which span(s) contain the claim
+        from agency.context import _segment_spans
+        spans = _segment_spans("src-b007", "hash", raw)
+        claim_spans = [s for s in spans if "Permission escalation patterns" in s.text]
+        span_ids = [s.span_id for s in claim_spans]
+
+        evidence = [{"source_id": "src-b007", "claim_id": "c1",
+                     "claim_kind": "assertion",
+                     "span_ids": span_ids}]
+        f = _make_finding("f1", "Permission escalation patterns logged.", ["src-b007"], "assertion",
+            [{"source_id": "src-b007", "claim_id": "c1"}])
+        syn = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+               "findings": [f], "unresolved_questions": []}
+        ctx = _run_epi(evidence, _dir_resp("READY_FOR_SYNTHESIS", syn), canonical)
+        assert ctx.status == "completed"
+
+        # Claim text contains markdown bold markers exactly
+        ev = next(e for e in ctx.accepted_evidence if e["claim_id"] == "c1")
+        assert "**Permission escalation patterns.**" in ev["claim_text"]
+
+        # Injected quote matches raw source substring exactly
+        f1 = ctx.decisions[0]["synthesis"]["findings"][0]
+        injected = f1["source_quotes"][0]["quote"]
+        assert injected in raw
+        assert "**" in injected
+
+        # No provenance incidents
+        assert len(ctx.incidents) == 0
+
+    # ── View contract tests ──
+    def test_ea_view_contains_spans_exactly_once(self):
+        """EA view sources[*].spans contains span text exactly once per span."""
+        sha = _make_sha("eav")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.set_source_candidates([{"id": "s1", "url": "", "author_handle": "a",
+                                     "content_type": "comment", "untrusted": True,
+                                     "content_excerpt": "Hello world."}])
+        ctx.set_raw_source("s1", "", "a", "comment", "Hello world. Second sentence.")
+        view = ctx.view_for("evidence_analyst")
+        assert len(view["sources"]) == 1
+        spans = view["sources"][0]["spans"]
+        assert len(spans) >= 1
+        # Concatenated span texts must not duplicate
+        texts = [s["text"] for s in spans]
+        full = "".join(texts)
+        assert full == "Hello world. Second sentence."
+        assert full.count("Hello world.") == 1
+
+    def test_ea_view_excludes_raw_content_and_content_excerpt(self):
+        """EA view must not expose raw_content or content_excerpt."""
+        sha = _make_sha("eav2")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.set_source_candidates([{"id": "s1", "url": "", "author_handle": "a",
+                                     "content_type": "comment", "untrusted": True,
+                                     "content_excerpt": "Hello."}])
+        ctx.set_raw_source("s1", "", "a", "comment", "Hello.")
+        view = ctx.view_for("evidence_analyst")
+        src = view["sources"][0]
+        assert "raw_content" not in src
+        assert "content_excerpt" not in src
+        assert "source_content_hash" not in src
+
+    def test_director_view_excludes_internal_fields(self):
+        """Director view accepted_evidence excludes source_content_hash, span_ids."""
+        sha = _make_sha("dv")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.add_accepted_evidence([{
+            "source_id": "s1", "claim_id": "c1", "claim_kind": "assertion",
+            "claim_text": "Text.", "author_handle": "a", "source_class": "external",
+            "content_type": "comment", "url": "", "content_excerpt": "excerpt",
+            "source_content_hash": "abc123", "span_ids": ["s1/span/0"],
+        }])
+        view = ctx.view_for("agency_director")
+        ev = view["accepted_evidence"][0]
+        assert "source_content_hash" not in ev
+        assert "span_ids" not in ev
+        assert "content_excerpt" not in ev
+        # Public fields present
+        for f in ("source_id", "claim_id", "claim_kind", "claim_text",
+                  "author_handle", "source_class"):
+            assert f in ev, f"Director view missing {f}"
+
+    def test_internal_evidence_retains_hash_and_spans(self):
+        """Internal _accepted_evidence retains source_content_hash, span_ids."""
+        sha = _make_sha("ie")
+        ctx = AgencyContextV1(base_sha=sha)
+        ctx.add_accepted_evidence([{
+            "source_id": "s1", "claim_id": "c1", "claim_kind": "assertion",
+            "claim_text": "Text.", "author_handle": "a", "source_class": "external",
+            "content_type": "comment", "url": "", "content_excerpt": "excerpt",
+            "source_content_hash": "abc123", "span_ids": ["s1/span/0"],
+        }])
+        # Internal data retains runtime fields
+        ev = ctx.accepted_evidence[0]
+        assert ev["source_content_hash"] == "abc123"
+        assert ev["span_ids"] == ["s1/span/0"]

@@ -227,7 +227,8 @@ class EvidenceAnalystRole:
 
     def __call__(self, ctx_view: dict[str, Any]) -> RoleResult:
         candidates = ctx_view.get("source_candidates", [])
-        if not candidates:
+        sources = ctx_view.get("sources", [])
+        if not candidates and not sources:
             return RoleResult(self.ROLE, "NOOP")
 
         if self._adapter:
@@ -242,26 +243,32 @@ class EvidenceAnalystRole:
             return _safe_result(self.ROLE, result)
 
         accepted, rejected = [], []
-        for c in candidates:
-            if c.get("untrusted") is True:
-                cid = c.get("id") or c.get("source_id", "")
-                excerpt = c.get("content_excerpt", "")
-                if not excerpt.strip():
-                    rejected.append({
-                        "source_id": cid,
-                        "reason": "empty content_excerpt",
-                    })
-                    continue
-                # Deterministic: accept the entire source as one claim
-                # with all of its span IDs (contiguous by construction).
-                source_spans = ctx_view.get("spans", {}).get(cid, [])
-                span_ids = [s["span_id"] for s in source_spans] if source_spans else []
-                accepted.append({
+        items = candidates if candidates else sources
+        for c in items:
+            cid = c.get("id") or c.get("source_id", "")
+            excerpt = c.get("content_excerpt", "")
+            if items is candidates and not excerpt.strip():
+                rejected.append({
                     "source_id": cid,
-                    "claim_id": f"det-{cid[:12]}",
-                    "claim_kind": "unknown",
-                    "span_ids": span_ids,
+                    "reason": "empty content_excerpt",
                 })
+                continue
+            # Deterministic: accept the entire source as one claim
+            # with all of its span IDs (contiguous by construction).
+            source_spans = c.get("spans", [])
+            if not source_spans:
+                # Look up spans from sources view
+                for src in ctx_view.get("sources", []):
+                    if src.get("source_id") == cid:
+                        source_spans = src.get("spans", [])
+                        break
+            span_ids = [s["span_id"] for s in source_spans] if source_spans else []
+            accepted.append({
+                "source_id": cid,
+                "claim_id": f"det-{cid[:12]}",
+                "claim_kind": "unknown",
+                "span_ids": span_ids,
+            })
         return RoleResult(self.ROLE, "COMPLETE",
                           data={"accepted": accepted, "rejected": rejected,
                                 "claims": [], "scores": {},
