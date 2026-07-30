@@ -6,6 +6,8 @@ from __future__ import annotations
 import time as _time
 from typing import Any
 
+import jsonschema
+
 from .context import AgencyContextV1, AgencyBudget, RepoStateProvider
 from .events import (BUDGET_EXHAUSTED, ROLE_COMPLETED, ROLE_FAILED,
                      DIRECTOR_DECISION, CAMPAIGN_LOADED, SOURCE_ACCEPTED)
@@ -231,6 +233,17 @@ class AgencyOrchestrator:
             return "NOOP"
 
         director_data = result.data
+        # Reject raw Director response containing deterministic metadata fields
+        for forbidden in ("source_basis", "distinct_author_count",
+                          "distinct_external_author_count", "confidence"):
+            for finding in director_data.get("synthesis", {}).get("findings", []):
+                if forbidden in finding:
+                    self.ctx.record_incident(
+                        f"Director returned forbidden deterministic field: {forbidden}",
+                        severity="high")
+                    self.ctx.close("failed")
+                    return "NOOP"
+
         disposition = director_data.get("disposition", "")
         if not disposition or disposition not in DIRECTOR_ROUTES:
             self.ctx.record_incident(
@@ -240,7 +253,6 @@ class AgencyOrchestrator:
 
         synthesis = director_data.get("synthesis")
         if synthesis:
-            # --- inquiry must equal campaign objective ---
             objective = self.ctx.campaign.get("objective", "")
             syn_inquiry = synthesis.get("inquiry", "")
             if syn_inquiry != objective:
@@ -250,19 +262,20 @@ class AgencyOrchestrator:
                 self.ctx.close("failed")
                 return "NOOP"
 
-            # --- build accepted evidence lookup ---
-            accepted_ids: set[str] = set()
-            accepted_map: dict[str, dict[str, Any]] = {}
+            # Build claim-level lookup: (source_id, claim_id) → evidence
+            accepted_claims: dict[tuple[str, str], dict[str, Any]] = {}
+            accepted_src_ids: set[str] = set()
             for ev in self.ctx.accepted_evidence:
                 sid = ev.get("source_id", "")
-                if sid:
-                    accepted_ids.add(sid)
-                    accepted_map[sid] = ev
+                cid = ev.get("claim_id", "")
+                if sid and cid:
+                    accepted_src_ids.add(sid)
+                    accepted_claims[(sid, cid)] = ev
 
-            # --- validate source_ids and quotes ---
             for finding in synthesis.get("findings", []):
+                # Every source_id must be represented by at least one quote
                 for src_id in finding.get("source_ids", []):
-                    if not src_id or src_id not in accepted_ids:
+                    if not src_id or src_id not in accepted_src_ids:
                         self.ctx.record_incident(
                             f"Synthesis finding {finding.get('finding_id','?')} "
                             f"references unknown source_id: {src_id}",
@@ -270,13 +283,20 @@ class AgencyOrchestrator:
                         self.ctx.close("failed")
                         return "NOOP"
 
-                # Validate exact quotes
+                quoted_src_ids: set[str] = set()
                 for sq in finding.get("source_quotes", []):
                     q_src = sq.get("source_id", "")
+                    q_claim = sq.get("claim_id", "")
                     quote = sq.get("quote", "")
                     if not q_src or q_src not in finding.get("source_ids", []):
                         self.ctx.record_incident(
                             f"Quote source_id {q_src} not in finding source_ids",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
+                    if not q_claim:
+                        self.ctx.record_incident(
+                            f"Quote missing claim_id in finding {finding.get('finding_id','?')}",
                             severity="high")
                         self.ctx.close("failed")
                         return "NOOP"
@@ -286,83 +306,54 @@ class AgencyOrchestrator:
                             severity="high")
                         self.ctx.close("failed")
                         return "NOOP"
-                    ac_ev = accepted_map.get(q_src, {})
+                    claim_key = (q_src, q_claim)
+                    ac_ev = accepted_claims.get(claim_key)
+                    if ac_ev is None:
+                        self.ctx.record_incident(
+                            f"Quote references unknown claim: {claim_key}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
                     excerpt = ac_ev.get("content_excerpt", "")
                     if quote not in excerpt:
                         self.ctx.record_incident(
                             f"Quote not found in canonical excerpt for "
                             f"finding {finding.get('finding_id','?')}, "
-                            f"source {q_src}",
+                            f"source {q_src} claim {q_claim}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return "NOOP"
+                    quoted_src_ids.add(q_src)
+
+                # Every finding source_id must have at least one quote
+                for src_id in finding.get("source_ids", []):
+                    if src_id not in quoted_src_ids:
+                        self.ctx.record_incident(
+                            f"Finding {finding.get('finding_id','?')}: "
+                            f"source_id {src_id} has no quote coverage",
                             severity="high")
                         self.ctx.close("failed")
                         return "NOOP"
 
-                # --- confidence calibration ---
-                confidence = finding.get("confidence", "")
-                source_basis = self._compute_source_basis(finding)
-                ext_contributors = self._count_independent_external(finding)
-
-                # supported requires external source
-                if confidence == "supported":
-                    if source_basis == "internal":
-                        self.ctx.record_incident(
-                            f"Finding {finding.get('finding_id','?')}: "
-                            f"confidence 'supported' requires external source, "
-                            f"but source_basis is 'internal'",
-                            severity="high")
-                        self.ctx.close("failed")
-                        return "NOOP"
-                    if ext_contributors == 0:
-                        self.ctx.record_incident(
-                            f"Finding {finding.get('finding_id','?')}: "
-                            f"confidence 'supported' requires at least one "
-                            f"independent external contributor",
-                            severity="high")
-                        self.ctx.close("failed")
-                        return "NOOP"
-                    # Check that at least one external source is assertion
-                    has_assertion = any(
-                        accepted_map.get(sid, {}).get("claim_kind") == "assertion"
-                        and accepted_map.get(sid, {}).get("source_class") == "external"
-                        for sid in finding.get("source_ids", []))
-                    if not has_assertion:
-                        self.ctx.record_incident(
-                            f"Finding {finding.get('finding_id','?')}: "
-                            f"confidence 'supported' requires at least one external "
-                            f"assertion source",
-                            severity="high")
-                        self.ctx.close("failed")
-                        return "NOOP"
-
-                # internal-only: only inferred or unknown
-                if source_basis == "internal":
-                    if confidence not in ("inferred", "unknown"):
-                        self.ctx.record_incident(
-                            f"Finding {finding.get('finding_id','?')}: "
-                            f"internal-only findings may use 'inferred' or "
-                            f"'unknown', not '{confidence}'",
-                            severity="high")
-                        self.ctx.close("failed")
-                        return "NOOP"
-
-                # All-opinion/proposal/question/warning/unknown → no supported
-                kinds = {accepted_map.get(sid, {}).get("claim_kind", "unknown")
-                         for sid in finding.get("source_ids", [])}
-                if kinds and kinds <= {"opinion", "proposal", "question",
-                                        "warning", "unknown"}:
-                    if confidence == "supported":
-                        self.ctx.record_incident(
-                            f"Finding {finding.get('finding_id','?')}: "
-                            f"confidence 'supported' not allowed when all "
-                            f"sources are opinions/proposals/questions/warnings",
-                            severity="high")
-                        self.ctx.close("failed")
-                        return "NOOP"
-
-                # --- deterministic metadata ---
-                finding["source_basis"] = source_basis
+                # Compute deterministic metadata
+                finding["source_basis"] = self._compute_source_basis(finding)
                 finding["distinct_author_count"] = self._count_distinct_authors(finding)
-                finding["independent_external_contributor_count"] = ext_contributors
+                finding["distinct_external_author_count"] = (
+                    self._count_distinct_external_authors(finding))
+
+            # Validate enriched decision against committed schema
+            from pathlib import Path as _Path
+            import json as _json
+            sd = _Path(__file__).resolve().parents[1] / "schemas"
+            dec_schema = _json.loads((sd / "agency-decision-v1.schema.json").read_text())
+            try:
+                jsonschema.validate(instance=director_data, schema=dec_schema)
+            except jsonschema.ValidationError as exc:
+                self.ctx.record_incident(
+                    f"Enriched Director decision schema validation failed: {exc.message}",
+                    severity="high")
+                self.ctx.close("failed")
+                return "NOOP"
 
         self.ctx.append_event(DIRECTOR_DECISION, {
             "disposition": disposition,
@@ -374,18 +365,28 @@ class AgencyOrchestrator:
     def _compute_source_basis(self, finding: dict[str, Any]) -> str:
         internal = 0
         external = 0
+        unknown = 0
         for ev in self.ctx.accepted_evidence:
             sid = ev.get("source_id", "")
             if sid in finding.get("source_ids", []):
-                if ev.get("source_class") == "internal":
+                sc = ev.get("source_class", "")
+                if sc == "internal":
                     internal += 1
-                else:
+                elif sc == "external":
                     external += 1
+                elif sc == "unknown":
+                    unknown += 1
+                else:
+                    unknown += 1
         if internal and external:
             return "mixed"
-        if internal:
+        if internal and not external and not unknown:
             return "internal"
-        return "external"
+        if external and not internal and not unknown:
+            return "external"
+        if not internal and not external:
+            return "unknown"
+        return "mixed"
 
     def _count_distinct_authors(self, finding: dict[str, Any]) -> int:
         authors = set()
@@ -395,7 +396,7 @@ class AgencyOrchestrator:
                 authors.add(ev.get("author_handle", ""))
         return len(authors)
 
-    def _count_independent_external(self, finding: dict[str, Any]) -> int:
+    def _count_distinct_external_authors(self, finding: dict[str, Any]) -> int:
         authors = set()
         for ev in self.ctx.accepted_evidence:
             sid = ev.get("source_id", "")
@@ -437,21 +438,37 @@ class AgencyOrchestrator:
             accepted = data.get("accepted", [])
             rejected = data.get("rejected", [])
             if accepted:
-                # Rehydrate every accepted entry from canonical source records.
                 canonical_by_id: dict[str, dict[str, Any]] = {}
                 for sc in self.ctx.source_candidates:
                     sid = sc.get("id") or sc.get("source_id", "")
                     if sid:
                         canonical_by_id[sid] = sc
                 rehydrated = []
+                seen_claims: set[tuple[str, str]] = set()
                 for entry in accepted:
                     sid = entry.get("source_id", "")
+                    cid = entry.get("claim_id", "")
                     if not sid:
                         self.ctx.record_incident(
                             "Evidence Analyst accepted entry with empty source_id",
                             severity="high")
                         self.ctx.close("failed")
                         return
+                    if not cid:
+                        self.ctx.record_incident(
+                            "Evidence Analyst accepted entry with empty claim_id",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return
+                    claim_key = (sid, cid)
+                    if claim_key in seen_claims:
+                        self.ctx.record_incident(
+                            f"Evidence Analyst accepted duplicate claim: "
+                            f"source_id={sid}, claim_id={cid}",
+                            severity="high")
+                        self.ctx.close("failed")
+                        return
+                    seen_claims.add(claim_key)
                     orig = canonical_by_id.get(sid)
                     if not orig:
                         self.ctx.record_incident(
@@ -459,15 +476,22 @@ class AgencyOrchestrator:
                             severity="high")
                         self.ctx.close("failed")
                         return
-                    is_internal = orig.get("author_handle", "") in self._internal_handles
+                    author = orig.get("author_handle", "")
+                    if not author or author == "unknown" or author not in self._internal_handles:
+                        if not author or author in ("unknown", ""):
+                            sc = "unknown"
+                        else:
+                            sc = "external"
+                    else:
+                        sc = "internal"
                     rehydrated.append({
-                        "source_id": orig.get("id", orig.get("source_id", sid)),
-                        "author_handle": orig.get("author_handle", ""),
+                        "source_id": orig.get("id", sid),
+                        "claim_id": cid,
+                        "author_handle": author,
                         "content_excerpt": orig.get("content_excerpt", ""),
                         "content_type": orig.get("content_type", ""),
                         "url": orig.get("url", ""),
-                        "source_class": "internal" if is_internal else "external",
-                        "claim_id": entry.get("claim_id", ""),
+                        "source_class": sc,
                         "claim_kind": entry.get("claim_kind", "unknown"),
                         "claim_text": entry.get("claim_text", ""),
                     })

@@ -73,14 +73,14 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
                     sqs = f.get("source_quotes", [])
                     for sq in sqs:
                         if isinstance(sq, dict):
-                            lines.append(f"    > `{sq.get('source_id','')[:12]}`: "
-                                         f"{sq.get('quote','')[:200]}")
-                    lines.append(f"  - Confidence: {f.get('confidence', '?')}")
+                            lines.append(f"    > `{sq.get('source_id','')}` "
+                                         f"claim={sq.get('claim_id','')}: "
+                                         f"{sq.get('quote','')}")
                     lines.append(f"  - Source basis: {f.get('source_basis', '?')}")
                     lines.append(f"  - Distinct authors: "
                                  f"{f.get('distinct_author_count', '?')}")
-                    lines.append(f"  - Independent external contributors: "
-                                 f"{f.get('independent_external_contributor_count', '?')}")
+                    lines.append(f"  - Distinct external authors: "
+                                 f"{f.get('distinct_external_author_count', '?')}")
                     lines.append(f"  - Reasoning: {f.get('reasoning', '')}")
                     lines.append("")
         questions = synthesis.get("unresolved_questions", [])

@@ -234,7 +234,13 @@ class EvidenceAnalystRole:
         accepted, rejected = [], []
         for c in candidates:
             if c.get("untrusted") is True:
-                accepted.append(c)
+                cid = c.get("id") or c.get("source_id", "")
+                accepted.append({
+                    "source_id": cid,
+                    "claim_id": f"det-{cid[:12]}",
+                    "claim_kind": "unknown",
+                    "claim_text": c.get("content_excerpt", "")[:200],
+                })
         return RoleResult(self.ROLE, "COMPLETE",
                           data={"accepted": accepted, "rejected": rejected,
                                 "claims": [], "scores": {},

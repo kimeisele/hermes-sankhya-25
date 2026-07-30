@@ -3,12 +3,13 @@
   "$id": "https://hermes-sankhya-25/agency-decision-v1.schema.json",
   "title": "AgencyDecisionV1",
   "type": "object",
+  "additionalProperties": false,
   "required": ["decision_id", "disposition", "timestamp", "director_run_id"],
   "properties": {
-    "decision_id": {"type": "string"},
+    "decision_id": {"type": "string", "minLength": 1},
     "disposition": {"type": "string", "enum": ["NOOP", "RECORD_ONLY", "PROPOSE_ENGAGEMENT", "PROPOSE_ENGINEERING_INTAKE", "READY_FOR_SYNTHESIS", "ESCALATE_TO_HUMAN"]},
     "timestamp": {"type": "string", "format": "date-time"},
-    "director_run_id": {"type": "string"},
+    "director_run_id": {"type": "string", "minLength": 1},
     "rationale": {"type": "string"},
     "next_role": {"type": "string"},
     "provenance": {"type": "array", "items": {"type": "string"}},
@@ -18,25 +19,24 @@
       "required": ["inquiry", "executive_answer", "findings", "unresolved_questions"],
       "additionalProperties": false,
       "properties": {
-        "inquiry": {"type": "string"},
-        "executive_answer": {"type": "string"},
+        "inquiry": {"type": "string", "minLength": 1},
+        "executive_answer": {"type": "string", "minLength": 1},
         "findings": {
           "type": "array",
           "minItems": 0,
           "items": {
             "type": "object",
-            "required": ["finding_id", "statement", "source_ids", "confidence", "reasoning", "finding_kind", "source_quotes"],
+            "required": ["finding_id", "statement", "source_ids", "reasoning", "finding_kind", "source_quotes"],
             "additionalProperties": false,
             "properties": {
-              "finding_id": {"type": "string"},
-              "statement": {"type": "string"},
+              "finding_id": {"type": "string", "minLength": 1},
+              "statement": {"type": "string", "minLength": 1},
               "source_ids": {
                 "type": "array",
                 "minItems": 1,
                 "items": {"type": "string"},
                 "uniqueItems": true
               },
-              "confidence": {"type": "string", "enum": ["observed", "supported", "inferred", "unknown"]},
               "reasoning": {"type": "string"},
               "finding_kind": {"type": "string", "enum": ["assertion", "opinion", "proposal", "question", "warning", "unknown"]},
               "source_quotes": {
@@ -44,14 +44,18 @@
                 "minItems": 1,
                 "items": {
                   "type": "object",
-                  "required": ["source_id", "quote"],
+                  "required": ["source_id", "claim_id", "quote"],
                   "additionalProperties": false,
                   "properties": {
-                    "source_id": {"type": "string"},
+                    "source_id": {"type": "string", "minLength": 1},
+                    "claim_id": {"type": "string", "minLength": 1},
                     "quote": {"type": "string", "minLength": 1}
                   }
                 }
-              }
+              },
+              "source_basis": {"type": "string", "enum": ["internal", "external", "mixed", "unknown"]},
+              "distinct_author_count": {"type": "integer", "minimum": 0},
+              "distinct_external_author_count": {"type": "integer", "minimum": 0}
             }
           }
         },
