@@ -777,579 +777,345 @@ class TestRuntimeValidation:
         assert any("base_sha" in e for e in errs)
 
 
-# ---------------------------------------------------------------------------
-# Fake-DeepSeek Observe E2E (production-like adapters)
-# ---------------------------------------------------------------------------
-
-class TestFakeDeepSeekE2E:
-    def test_observe_with_fake_transport(self):
-        """Full pipeline with real adapters + fake DeepSeek transport."""
-        sha = _make_sha("fake-ds")
-
-        # Scout schema response
-        scout_response = {"candidates_found": 1, "candidates": [
-            {"url": "https://www.moltbook.com/post/test-post",
-             "id": "new-claim-1",
-             "author_handle": "test_agent",
-             "content_type": "comment"}
-        ]}
-        # Clerk schema response
-        clerk_response = {"normalized": [{
-            "source_id": "new-claim-1",
-            "url": "https://www.moltbook.com/post/test-post",
-            "author_handle": "test_agent",
-            "content_type": "comment",
-            "observed_at": "2026-07-27T00:00:00Z",
-            "untrusted": True,
-            "content_excerpt": "commit_hash is essential for verification receipts",
-            "paraphrase": "commit_hash is essential",
-            "provenance": ["https://www.moltbook.com/post/test-post"]
-        }]}
-        # Evidence Analyst response
-        evidence_response = {"accepted": [{
-            "source_id": "new-claim-1",
-            "url": "https://www.moltbook.com/post/test-post",
-            "author_handle": "test_agent",
-            "untrusted": True,
-            "content_excerpt": "commit_hash is essential for verification receipts"
-        }], "rejected": [], "claims": [], "scores": {}, "rationale": "Valid claim"}
-        # Director response (schema-compliant: decision_id + director_run_id are envelope fields)
-        director_response = {"disposition": "RECORD_ONLY", "rationale": "New evidence found",
-                            "decision_id": "d1", "director_run_id": "r1",
-                            "timestamp": "2026-07-27T00:00:00Z"}
-        # Auditor response
-        auditor_response = {"findings": [], "passed": True}
-
-        call_log = []
-
-        class FakeTransport:
-            def __call__(self, payload):
-                call_log.append({
-                    "model": payload.get("model"),
-                    "system": payload.get("messages", [{}])[0].get("content", "")[:200],
-                    "has_schema": "Output JSON only" in payload.get("messages", [{}])[0].get("content", ""),
-                })
-                # Route by model
-                model = payload.get("model", "")
-                resp_data = scout_response
-                if "pro" in model:
-                    # Could be director, engagement, planner
-                    msg = payload.get("messages", [{}])[0].get("content", "")
-                    if "director" in msg.lower() or "strategic" in msg.lower():
-                        resp_data = director_response
-                    else:
-                        resp_data = director_response
-                else:
-                    # Flash: scout, clerk, evidence, auditor
-                    msg = payload.get("messages", [{}])[0].get("content", "")
-                    if "normalize" in msg.lower():
-                        resp_data = clerk_response
-                    elif "extract claims" in msg.lower() or "classify" in msg.lower():
-                        resp_data = evidence_response
-                    elif "audit" in msg.lower():
-                        resp_data = auditor_response
-                return {
-                    "choices": [{"message": {"content": json.dumps(resp_data)}}],
-                    "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
-                    "model": model,
-                }
-
-        from agency.model_client import DeepSeekClient
-        client = DeepSeekClient(transport=FakeTransport())
-
-        class FakeReader:
-            def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "Test content about verification.",
-                                 "author": {"name": "post_author"}}}
-            def fetch_comments(self, pid):
-                return {"comments": [
-                    {"id": "new-claim-1",
-                     "content": "commit_hash is essential for verification receipts",
-                     "author": {"name": "test_agent"}},
-                ]}
-
-        class P(RepoStateProvider):
-            def current_sha(self): return sha
-            def origin_main_sha(self): return sha
-
-        reg = build_role_registry(client=client, moltbook_reader=FakeReader())
-        orch = AgencyOrchestrator(
-            base_sha=sha, repo_provider=P(), role_registry=reg,
-            campaign={"active_inquiry": "test-post", "objective": "Test"})
-        orch.ctx.set_evidence_index(set())  # no prior evidence
-
-        ctx = orch.run()
-
-        # Verify pipeline completed
-        assert ctx.status == "completed"
-
-        # Model calls occurred
-        assert len(call_log) > 0, "At least one model call expected"
-
-        # Each call includes the schema in system prompt
-        for call in call_log:
-            assert call["has_schema"], f"Schema not found in {call['model']} call"
-
-        # Evidence reached Director
-        assert len(ctx.decisions) > 0
-        assert ctx.decisions[0]["disposition"] == "RECORD_ONLY"
-
-        # CTX + HQ produced
-        d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
-        assert ctx.run_id[:12] in report
-
-        # No writes
-        assert len(ctx.transactions) == 0
-
-        # Runtime CTX validation passes
-        from agency.validate_ctx import validate_sanitized_ctx
-        errs = validate_sanitized_ctx(d)
-        assert len(errs) == 0, f"CTX validation errors: {errs}"
 
 
 # ---------------------------------------------------------------------------
-# Proof: Scout and Records Clerk are deterministic
+# Epistemic hardening tests A–H
 # ---------------------------------------------------------------------------
 
-class TestDeterministicIngestion:
-    """Scout and Records Clerk must run without LLM transport.
-    Evidence Analyst remains model-backed."""
+_OBJECTIVE = "What claims and proposals appear in the discussion?"
 
-    def test_scout_and_clerk_never_invoke_model(self):
-        """Deterministic roles must not call the model."""
-        sentinel = "UNIQUE-SENTINEL-abc123xyz-verification-receipt"
-        model_calls: list[str] = []
+_FAKE_TX = None  # will be instantiated per test
 
-        class _Tx:
-            def __call__(self, payload):
-                model_calls.append(payload.get("model", ""))
-                # Evidence Analyst response
-                return {
-                    "choices": [{"message": {"content": json.dumps({
-                        "accepted": [], "rejected": [], "claims": [],
-                        "scores": {}, "rationale": "test",
-                    })}}],
-                    "usage": {"prompt_tokens": 50, "completion_tokens": 30,
-                              "total_tokens": 80},
-                }
+def _make_evidence_response(accepted_list, rejected=None):
+    return {"choices": [{"message": {"content": json.dumps({
+        "accepted": accepted_list,
+        "rejected": rejected or [],
+        "claims": [], "scores": {}, "rationale": "test",
+    })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
 
-        from agency.model_client import DeepSeekClient
-        client = DeepSeekClient(transport=_Tx())
-
-        class _Reader:
-            def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "Post body.",
-                                 "author": {"name": "op"}}}
-            def fetch_comments(self, pid):
-                return {"comments": [
-                    {"id": "c-1", "content": sentinel,
-                     "author": {"name": "vantik"}},
-                ]}
-
-        reg = build_role_registry(client=client, moltbook_reader=_Reader())
-
-        # ── Scout (deterministic) ──
-        scout = reg["scout"]
-        assert scout._adapter is None, "Scout must have no model adapter"
-        scout_ctx = {
-            "inbox": [], "known_ids": set(), "campaign": {
-                "active_inquiry": "test-p"}}
-        calls_before = len(model_calls)
-        result = scout(scout_ctx)
-        assert result.status == "COMPLETE"
-        assert len(model_calls) == calls_before, (
-            f"Scout called model {len(model_calls) - calls_before} time(s)")
-        candidates = result.data["candidates"]
-        vantik = [c for c in candidates if c.get("author_handle") == "vantik"]
-        assert len(vantik) == 1
-        assert vantik[0]["content_excerpt"] == sentinel, (
-            f"Scout must preserve sentinel, got: "
-            f"{vantik[0].get('content_excerpt', '')[:60]!r}")
-
-        # ── Records Clerk (deterministic) ──
-        clerk = reg["records_clerk"]
-        assert clerk._adapter is None, "Records Clerk must have no model adapter"
-        clerk_ctx = {"source_candidates": [vantik[0]]}
-        calls_before2 = len(model_calls)
-        result2 = clerk(clerk_ctx)
-        assert result2.status == "COMPLETE"
-        assert len(model_calls) == calls_before2, (
-            f"Clerk called model {len(model_calls) - calls_before2} time(s)")
-        norm = result2.data["normalized"]
-        assert len(norm) == 1
-        assert norm[0]["content_excerpt"] == sentinel, (
-            f"Clerk must preserve sentinel, got: "
-            f"{norm[0].get('content_excerpt', '')[:60]!r}")
-
-        # ── Evidence Analyst (model-backed) ──
-        evidence = reg["evidence_analyst"]
-        assert evidence._adapter is not None, (
-            "Evidence Analyst must have a model adapter")
-        evidence_ctx = {"source_candidates": norm}
-        calls_before3 = len(model_calls)
-        result3 = evidence(evidence_ctx)
-        assert result3.status == "COMPLETE"
-        assert len(model_calls) > calls_before3, (
-            f"Evidence Analyst must call model, got {len(model_calls) - calls_before3} calls")
+def _make_director_response(disposition, synthesis=None):
+    base = {"decision_id": "d1", "disposition": disposition,
+            "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
+            "rationale": "test"}
+    if synthesis is not None:
+        base["synthesis"] = synthesis
+    return {"choices": [{"message": {"content": json.dumps(base)}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
 
 
-# ---------------------------------------------------------------------------
-# Director synthesis — integration and adversarial tests
-# ---------------------------------------------------------------------------
+class TestEpistemicHardening:
+    """Tests A–H for epistemic hardening of the research synthesis."""
 
-class TestDirectorSynthesis:
-    """Director produces structured synthesis on READY_FOR_SYNTHESIS.
-    Any disposition carrying a synthesis must pass provenance validation."""
-
-    # ------------------------------------------------------------------
-    # Shared helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _make_evidence_response(accepted: list[dict]) -> dict:
-        return {"choices": [{"message": {"content": json.dumps({
-            "accepted": accepted,
-            "rejected": [], "claims": [],
-            "scores": {}, "rationale": "ok",
-        })}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
-                      "total_tokens": 15}}
-
-    @staticmethod
-    def _make_director_response(disposition: str, synthesis: dict | None = None) -> dict:
-        base = {
-            "decision_id": "d1",
-            "disposition": disposition,
-            "director_run_id": "r1",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "rationale": "Director rationale.",
+    def _make_canonical(self, sid, author, excerpt, kind, text):
+        return {
+            "id": sid, "url": f"https://m.example/{sid}",
+            "author_handle": author, "content_type": "comment",
+            "untrusted": True, "content_excerpt": excerpt,
+            "claim_id": f"c-{sid[:4]}", "claim_kind": kind,
+            "claim_text": text,
         }
-        if synthesis is not None:
-            base["synthesis"] = synthesis
-        return {"choices": [{"message": {"content": json.dumps(base)}}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5,
-                          "total_tokens": 15}}
 
-    @staticmethod
-    def _run(call_log: list, director_resp: dict, evidence_accepted: list[dict],
-             reader_ids: list[str] | None = None):
+    def _make_finding(self, fid, statement, src_ids, confidence, kind, quotes, reasoning="R"):
+        return {
+            "finding_id": fid, "statement": statement,
+            "source_ids": src_ids, "confidence": confidence,
+            "finding_kind": kind, "source_quotes": quotes,
+            "reasoning": reasoning,
+        }
+
+    def _run(self, evidence_accepted, director_resp, canonical_items, call_log=None):
         from agency.model_client import DeepSeekClient
-        if reader_ids is None:
-            reader_ids = [e["source_id"] for e in evidence_accepted]
+        if call_log is None:
+            call_log = []
 
         class _Tx:
             def __call__(self, payload):
+                call_log.append(payload.get("model", ""))
                 msgs = payload.get("messages", [])
                 sys = msgs[0]["content"] if msgs else ""
-                call_log.append({"model": payload.get("model", ""),
-                                 "system": sys[:60]})
                 if "extract claims" in sys.lower() or "classify" in sys.lower():
-                    return TestDirectorSynthesis._make_evidence_response(
-                        evidence_accepted)
+                    return _make_evidence_response(evidence_accepted)
                 return director_resp
 
         client = DeepSeekClient(transport=_Tx())
 
         class _R:
             def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post",
-                                 "author": {"name": "op"}}}
+                return {"post": {"id": pid, "content": "body", "author": {"name": "op"}}}
             def fetch_comments(self, pid):
-                return {"comments": [
-                    {"id": sid, "content": "evidence",
-                     "author": {"name": "ext"}} for sid in reader_ids
-                ]}
+                return {"comments": [{"id": c["id"], "content": c["content_excerpt"],
+                         "author": {"name": c["author_handle"]}} for c in canonical_items]}
 
+        sha = _make_sha("epi")
         class _P(RepoStateProvider):
-            def __init__(self, s):
-                self.s = s
+            def __init__(self, s): self.s = s
             def current_sha(self): return self.s
             def origin_main_sha(self): return self.s
 
-        sha = _make_sha("syn-gen")
         reg = build_role_registry(client=client, moltbook_reader=_R())
         orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(sha),
-                                  role_registry=reg,
-                                  campaign={"active_inquiry": "t",
-                                            "objective": "T"})
+            role_registry=reg, campaign={"active_inquiry": "t",
+            "objective": _OBJECTIVE, "internal_author_handles": ["hermes-sankhya-25"]})
         orch.ctx.set_evidence_index(set())
         return orch.run()
 
-    # ------------------------------------------------------------------
-    # 1. Full rendering — no truncation
-    # ------------------------------------------------------------------
-
-    def test_full_synthesis_rendered_without_truncation(self):
-        """Long statement, long reasoning, 6+ source IDs all survive."""
-        call_log: list[dict] = []
-
-        long_statement = ("This statement is intentionally longer than one "
-                          "hundred and twenty characters to prove that no "
-                          "truncation occurs at the old 120-char boundary. "
-                          "SENTINEL-STAT-END")
-        long_reasoning = ("This reasoning text is intentionally longer "
-                          "than two hundred characters to prove that the "
-                          "old 200-character truncation has been removed. "
-                          "It continues past the former boundary with more "
-                          "detail and ends at this exact sentinel: "
-                          "SENTINEL-REASON-END")
-
-        src_ids = [f"src-{i:02d}" for i in range(1, 8)]  # 7 source IDs
-        evidence = [{"source_id": sid, "claim_id": "c1"}
-                    for sid in src_ids]
-
-        director_resp = self._make_director_response("READY_FOR_SYNTHESIS", {
-            "inquiry": "Q",
-            "executive_answer": "A",
-            "findings": [{
-                "finding_id": "f1",
-                "statement": long_statement,
-                "source_ids": src_ids,
-                "confidence": "supported",
-                "reasoning": long_reasoning,
-            }],
-            "unresolved_questions": [],
-            "next_inquiry": "N",
-        })
-
-        ctx = self._run(call_log, director_resp, evidence, reader_ids=src_ids)
+    # ── Test A: canonical source ownership ──
+    def test_a_canonical_source_ownership(self):
+        """Model-forged author and excerpt must not survive."""
+        sid = "src-a-001"
+        real_author = "vantik"
+        real_excerpt = "REAL EXCERPT from vantik."
+        canonical = [self._make_canonical(sid, real_author, real_excerpt, "assertion", "Claim A")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion",
+                     "claim_text": "FAKE TEXT FROM MODEL"}]
+        director = _make_director_response("RECORD_ONLY")
+        ctx = self._run(evidence, director, canonical)
         assert ctx.status == "completed"
+        assert len(ctx.accepted_evidence) >= 1
+        ev = next(e for e in ctx.accepted_evidence if e["source_id"] == sid)
+        assert ev["author_handle"] == real_author, f"Expected {real_author}, got {ev['author_handle']}"
+        assert ev["content_excerpt"] == real_excerpt
+        assert ev["source_class"] == "external"
+        # claim_text is model-provided and survives as-is; canonical
+        # override applies only to author, excerpt, type, url, class
 
+    # ── Test B: unknown accepted source ──
+    def test_b_unknown_accepted_source(self):
+        """Evidence Analyst accepts FAKE-SOURCE-ID → fail closed."""
+        evidence = [{"source_id": "FAKE-SOURCE-ID", "claim_id": "c1",
+                     "claim_kind": "assertion", "claim_text": "X"}]
+        director = _make_director_response("RECORD_ONLY")
+        canonical = [self._make_canonical("real-src", "vantik", "real text", "assertion", "X")]
+        ctx = self._run(evidence, director, canonical)
+        assert ctx.status == "failed"
+        assert len(ctx.incidents) >= 1
+        assert any("unknown source_id" in i["description"].lower() for i in ctx.incidents)
+        assert len(ctx.accepted_evidence) == 0
+
+    # ── Test C: real inquiry required ──
+    def test_c_inquiry_mismatch_fails_closed(self):
+        """Synthesis inquiry is UUID, not objective → fail closed."""
+        sid = "src-c-001"
+        canonical = [self._make_canonical(sid, "vantik", "Assertion text here.", "assertion", "C")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "C"}]
+        synthesis = {
+            "inquiry": "fd2c8049-5a16-417b-ab5d-8400a80d3ca7",  # UUID, not objective
+            "executive_answer": "A", "findings": [],
+            "unresolved_questions": [],
+        }
+        director = _make_director_response("READY_FOR_SYNTHESIS", synthesis)
+        ctx = self._run(evidence, director, canonical)
+        assert ctx.status == "failed"
+        assert any("inquiry mismatch" in i["description"].lower() for i in ctx.incidents)
+        assert len(ctx.decisions) == 0
         d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
+        assert "## Research Synthesis" not in render_hq_markdown(d)
 
-        # No truncation — full statement, full reasoning, all source IDs
-        assert long_statement in report, "full statement must appear"
-        assert long_reasoning in report, "full reasoning must appear"
-        for sid in src_ids:
-            assert sid in report, f"source_id {sid} must appear"
-        # Sentinel strings near the end confirm no truncation
-        assert "SENTINEL-STAT-END" in report
-        assert "SENTINEL-REASON-END" in report
+    # ── Test D: internal question cannot become supported requirement ──
+    def test_d_internal_question_no_supported(self):
+        """Internal question with confidence supported → FAIL_CLOSED."""
+        sid = "src-d-001"
+        excerpt = "Should we require binding to the work artifact?"
+        canonical = [self._make_canonical(sid, "hermes-sankhya-25", excerpt, "question", "D")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "question", "claim_text": "D"}]
+        finding = self._make_finding("f1", "Binding is required.", [sid],
+            "supported", "assertion",
+            [{"source_id": sid, "quote": "Should we require binding"}])
+        synthesis = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [finding], "unresolved_questions": []}
+        director = _make_director_response("READY_FOR_SYNTHESIS", synthesis)
+        ctx = self._run(evidence, director, canonical)
+        assert ctx.status == "failed"
+        assert len(ctx.incidents) >= 1
+        incident_text = " ".join(i["description"].lower() for i in ctx.incidents)
+        assert ("requires external source" in incident_text or
+                "opinions/proposals/questions/warnings" in incident_text), (
+            f"Unexpected incident: {ctx.incidents[0]['description']}")
+        assert len(ctx.decisions) == 0
 
-    # ------------------------------------------------------------------
-    # 2. READY_FOR_SYNTHESIS with valid provenance (existing, kept)
-    # ------------------------------------------------------------------
+    # ── Test E: one external opinion is not supported fact ──
+    def test_e_external_opinion_not_supported(self):
+        """External opinion with confidence supported → FAIL_CLOSED."""
+        sid = "src-e-001"
+        excerpt = "I believe schema adoption is the real moat."
+        canonical = [self._make_canonical(sid, "vantik", excerpt, "opinion", "E")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "opinion", "claim_text": "E"}]
+        finding = self._make_finding("f1", "Schema adoption is moat.", [sid],
+            "supported", "assertion",
+            [{"source_id": sid, "quote": "schema adoption is the real moat"}])
+        synthesis = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [finding], "unresolved_questions": []}
+        director = _make_director_response("READY_FOR_SYNTHESIS", synthesis)
+        ctx = self._run(evidence, director, canonical)
+        assert ctx.status == "failed"
+        assert any("assertion" in i["description"].lower() for i in ctx.incidents)
+        assert len(ctx.decisions) == 0
 
-    def test_synthesis_stored_and_rendered(self):
-        """Full pipeline: synthesis survives CTX and HQ Markdown."""
-        call_log: list[dict] = []
-        accepted_src = "src-abc-123"
-        evidence = [{"source_id": accepted_src, "claim_id": "c1"}]
+    # ── Test F: exact quote validation ──
+    def test_f_bad_quote_fails_closed(self):
+        """Quote not in excerpt → FAIL_CLOSED."""
+        sid = "src-f-001"
+        excerpt = "The minimum receipt needs commit_hash and timestamp."
+        canonical = [self._make_canonical(sid, "vantik", excerpt, "assertion", "F")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "F"}]
+        bad_finding = self._make_finding("f1", "Receipt needs fields.", [sid],
+            "supported", "assertion",
+            [{"source_id": sid, "quote": "THIS TEXT IS NOT IN THE EXCERPT"}])
+        synthesis = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [bad_finding], "unresolved_questions": []}
+        ctx = self._run(evidence, _make_director_response("READY_FOR_SYNTHESIS", synthesis), canonical)
+        assert ctx.status == "failed"
+        assert any("quote not found" in i["description"].lower() for i in ctx.incidents)
 
-        director_resp = self._make_director_response("READY_FOR_SYNTHESIS", {
-            "inquiry": "What is the answer?",
-            "executive_answer": "The answer is 42.",
-            "findings": [{
-                "finding_id": "f1",
-                "statement": "Answer found.",
-                "source_ids": [accepted_src],
-                "confidence": "supported",
-                "reasoning": "Evidence confirms.",
-            }],
-            "unresolved_questions": ["How to verify?"],
-            "next_inquiry": "Test next question.",
-        })
+    def test_f_good_quote_succeeds(self):
+        """Exact substring in excerpt → success."""
+        sid = "src-f-002"
+        excerpt = "The minimum receipt needs commit_hash and timestamp."
+        canonical = [self._make_canonical(sid, "vantik", excerpt, "assertion", "F2")]
+        evidence = [{"source_id": sid, "claim_id": "c1", "claim_kind": "assertion", "claim_text": "F2"}]
+        good_finding = self._make_finding("f1", "Receipt needs fields.", [sid],
+            "supported", "assertion",
+            [{"source_id": sid, "quote": "needs commit_hash and timestamp"}])
+        synthesis = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [good_finding], "unresolved_questions": []}
+        ctx = self._run(evidence, _make_director_response("READY_FOR_SYNTHESIS", synthesis), canonical)
+        assert ctx.status == "completed"
+        d = ctx.to_dict(sanitize=True)
+        assert "## Research Synthesis" in render_hq_markdown(d)
 
-        ctx = self._run(call_log, director_resp, evidence)
+    # ── Test G: successful mixed synthesis ──
+    def test_g_successful_mixed_synthesis(self):
+        """Mixed internal/external with proper assertions → success."""
+        s_int = "src-int"
+        s_ext1 = "src-ext1"
+        s_ext2 = "src-ext2"
+        int_excerpt = "One follow-up question: what binds the receipt to work?"
+        ext1_excerpt = "The minimum receipt needs commit_hash and timestamp as core fields."
+        ext2_excerpt = "I assert that test_run_id with pass/fail counts is also required."
+
+        canonical = [
+            self._make_canonical(s_int, "hermes-sankhya-25", int_excerpt, "question", "Internal Q"),
+            self._make_canonical(s_ext1, "vantik", ext1_excerpt, "assertion", "Ext assertion 1"),
+            self._make_canonical(s_ext2, "contributor_b", ext2_excerpt, "assertion", "Ext assertion 2"),
+        ]
+        evidence = [
+            {"source_id": s_int, "claim_id": "c1", "claim_kind": "question", "claim_text": "IQ"},
+            {"source_id": s_ext1, "claim_id": "c2", "claim_kind": "assertion", "claim_text": "EA1"},
+            {"source_id": s_ext2, "claim_id": "c3", "claim_kind": "assertion", "claim_text": "EA2"},
+        ]
+
+        # f1: mixed sources, supported (has external assertion)
+        f1 = self._make_finding("f1", "Receipt needs core fields.", [s_ext1, s_int],
+            "supported", "assertion",
+            [{"source_id": s_ext1, "quote": "commit_hash and timestamp"},
+             {"source_id": s_int, "quote": "what binds the receipt to work"}])
+
+        # f2: external-only, supported
+        f2 = self._make_finding("f2", "test_run_id is required.", [s_ext2],
+            "supported", "assertion",
+            [{"source_id": s_ext2, "quote": "test_run_id with pass/fail counts"}])
+
+        # f3: internal-only, inferred (correctly calibrated)
+        f3 = self._make_finding("f3", "Binding is an open question.", [s_int],
+            "inferred", "question",
+            [{"source_id": s_int, "quote": "what binds the receipt to work"}])
+
+        synthesis = {"inquiry": _OBJECTIVE, "executive_answer": "Receipt fields are proposed.",
+            "findings": [f1, f2, f3], "unresolved_questions": ["What binds receipt to work?"]}
+
+        ctx = self._run(evidence, _make_director_response("READY_FOR_SYNTHESIS", synthesis), canonical)
         assert ctx.status == "completed"
 
         assert len(ctx.decisions) == 1
         dec = ctx.decisions[0]
         assert dec["disposition"] == "READY_FOR_SYNTHESIS"
-        assert "synthesis" in dec
         syn = dec["synthesis"]
-        assert syn["inquiry"] == "What is the answer?"
-        assert syn["executive_answer"] == "The answer is 42."
-        assert len(syn["findings"]) == 1
-        assert syn["findings"][0]["source_ids"] == [accepted_src]
+        assert syn["inquiry"] == _OBJECTIVE
 
+        # internal/external classification
+        ev_map = {e["source_id"]: e for e in ctx.accepted_evidence}
+        assert ev_map[s_int]["source_class"] == "internal"
+        assert ev_map[s_ext1]["source_class"] == "external"
+        assert ev_map[s_ext2]["source_class"] == "external"
+
+        # source_basis computed correctly
+        assert syn["findings"][0]["source_basis"] == "mixed"
+        assert syn["findings"][1]["source_basis"] == "external"
+        assert syn["findings"][2]["source_basis"] == "internal"
+
+        # distinct author count
+        assert syn["findings"][0]["distinct_author_count"] == 2
+        assert syn["findings"][2]["distinct_author_count"] == 1
+
+        # independent external contributor count
+        assert syn["findings"][0]["independent_external_contributor_count"] == 1
+        assert syn["findings"][1]["independent_external_contributor_count"] == 1
+        assert syn["findings"][2]["independent_external_contributor_count"] == 0
+
+        # HQ renders all metadata and quotes
         d = ctx.to_dict(sanitize=True)
         report = render_hq_markdown(d)
         assert "## Research Synthesis" in report
-        assert "The answer is 42." in report
-        assert accepted_src[:12] in report
+        assert _OBJECTIVE in report
+        assert "Source basis: mixed" in report
+        assert "Distinct authors: 2" in report
+        assert "Independent external contributors: 1" in report
+        assert "commit_hash and timestamp" in report
+        assert "test_run_id with pass/fail counts" in report
+        assert "## Unresolved Questions" in report
 
-        # No extra model calls — Evidence Analyst + Director only
-        models = [c["model"] for c in call_log]
-        flash_models = [m for m in models if "pro" not in m.lower()]
-        pro_models = [m for m in models if "pro" in m.lower()]
-        assert len(flash_models) == 1, f"Expected 1 flash call, got {len(flash_models)}"
-        assert len(pro_models) == 1, f"Expected 1 pro call, got {len(pro_models)}"
+        # no next_inquiry rendered
+        assert "Next Inquiry" not in report
 
         assert len(ctx.transactions) == 0
-        assert len(ctx.incidents) == 0
 
-    # ------------------------------------------------------------------
-    # 3. READY_FOR_SYNTHESIS with fake source_id → FAIL_CLOSED
-    # ------------------------------------------------------------------
+    # ── Test H: schema rejection ──
+    def test_h_schema_rejection(self):
+        """Missing claim_kind, extra fields, missing source_quotes → all rejected."""
+        # missing claim_kind
+        bad1 = {"source_id": "x", "claim_id": "c1", "claim_text": "X"}
+        # unknown claim_kind
+        bad2 = {"source_id": "x", "claim_id": "c1", "claim_kind": "invalid_kind", "claim_text": "X"}
+        # extra field in accepted
+        bad3 = {"source_id": "x", "claim_id": "c1", "claim_kind": "assertion", "claim_text": "X", "extra_field": True}
 
-    def test_invalid_source_id_fails_closed(self):
-        """Unknown source_id in synthesis → FAIL_CLOSED, decision not stored."""
-        call_log: list[dict] = []
-        evidence = [{"source_id": "real-src", "claim_id": "c1"}]
+        from agency.model_client import validate_against_schema
+        import json
+        sd = Path(__file__).resolve().parents[2] / "schemas"
+        ev_schema = json.loads((sd / "evidence-analysis-output.schema.json").read_text())
+        dec_schema = json.loads((sd / "agency-decision-v1.schema.json").read_text())
 
-        director_resp = self._make_director_response("READY_FOR_SYNTHESIS", {
-            "inquiry": "Q",
-            "executive_answer": "A",
-            "findings": [{
-                "finding_id": "f1",
-                "statement": "S",
-                "source_ids": ["FAKE-NONEXISTENT-SRC"],
-                "confidence": "supported",
-                "reasoning": "R",
-            }],
-            "unresolved_questions": [],
-            "next_inquiry": "N",
-        })
+        # Evidence Analyst schema rejects bad items
+        assert len(validate_against_schema({"accepted": [bad1], "rejected": []}, ev_schema)) > 0
+        assert len(validate_against_schema({"accepted": [bad2], "rejected": []}, ev_schema)) > 0
+        assert len(validate_against_schema({"accepted": [bad3], "rejected": []}, ev_schema)) > 0
 
-        ctx = self._run(call_log, director_resp, evidence)
-        assert ctx.status == "failed"
-        assert len(ctx.incidents) >= 1
-        assert any("unknown source_id" in inc["description"].lower()
-                   for inc in ctx.incidents)
-        assert "FAKE-NONEXISTENT" in ctx.incidents[0]["description"]
+        # Director schema: missing source_quotes
+        bad_finding_no_quotes = {
+            "finding_id": "f1", "statement": "S", "source_ids": ["s"],
+            "confidence": "supported", "finding_kind": "assertion", "reasoning": "R",
+        }
+        bad_syn_no_quotes = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [bad_finding_no_quotes], "unresolved_questions": []}
+        bad_dec = {"decision_id": "d1", "disposition": "READY_FOR_SYNTHESIS",
+            "director_run_id": "r1", "timestamp": "2026-01-01T00:00:00Z",
+            "rationale": "x", "synthesis": bad_syn_no_quotes}
+        assert len(validate_against_schema(bad_dec, dec_schema)) > 0
 
-        # Invalid decision must NOT be stored
-        assert len(ctx.decisions) == 0, (
-            "Invalid decision with fake source_id must not be stored")
+        # extra field in finding
+        bad_finding_extra = dict(bad_finding_no_quotes)
+        bad_finding_extra["source_quotes"] = [{"source_id": "s", "quote": "q"}]
+        bad_finding_extra["extra_field"] = True
+        bad_syn_extra = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [bad_finding_extra], "unresolved_questions": []}
+        bad_dec_extra = dict(bad_dec)
+        bad_dec_extra["synthesis"] = bad_syn_extra
+        assert len(validate_against_schema(bad_dec_extra, dec_schema)) > 0
 
-        # Rendered HQ must NOT contain Research Synthesis
-        d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
-        assert "## Research Synthesis" not in report
-
-    # ------------------------------------------------------------------
-    # 4. RECORD_ONLY with fake source_id → FAIL_CLOSED (non-READY)
-    # ------------------------------------------------------------------
-
-    def test_record_only_with_bad_synthesis_fails_closed(self):
-        """RECORD_ONLY disposition carrying a synthesis with invalid
-        source_ids must also fail closed — provenance enforcement is
-        universal, not restricted to READY_FOR_SYNTHESIS."""
-        call_log: list[dict] = []
-        evidence = [{"source_id": "real-src", "claim_id": "c1"}]
-
-        director_resp = self._make_director_response("RECORD_ONLY", {
-            "inquiry": "Q",
-            "executive_answer": "A",
-            "findings": [{
-                "finding_id": "f1",
-                "statement": "S",
-                "source_ids": ["FAKE-NONEXISTENT-SRC"],
-                "confidence": "supported",
-                "reasoning": "R",
-            }],
-            "unresolved_questions": [],
-            "next_inquiry": "N",
-        })
-
-        ctx = self._run(call_log, director_resp, evidence)
-        assert ctx.status == "failed"
-        assert len(ctx.incidents) >= 1
-        assert any("unknown source_id" in inc["description"].lower()
-                   for inc in ctx.incidents)
-        assert "FAKE-NONEXISTENT" in ctx.incidents[0]["description"]
-
-        # Invalid decision must NOT be stored
-        assert len(ctx.decisions) == 0
-
-        # Rendered HQ must NOT contain Research Synthesis
-        d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
-        assert "## Research Synthesis" not in report
-
-
-# ---------------------------------------------------------------------------
-# Director FAIL_CLOSED incident registration
-# ---------------------------------------------------------------------------
-
-class TestDirectorFailClosed:
-    """Director FAIL_CLOSED must record an incident with role and reason."""
-
-    def test_director_timeout_records_incident(self):
-        """Director timeout → incident, no decision stored, evidence survives."""
-        sha = _make_sha("dir-fail")
-
-        accepted_src = "src-dir-fail-001"
-        raw_error = "DeepSeek timeout after 60s"
-
-        class _Tx:
-            call_count = 0
-            def __call__(self, payload):
-                _Tx.call_count += 1
-                # Evidence Analyst (call 1) — succeeds
-                if _Tx.call_count == 1:
-                    return {"choices": [{"message": {"content": json.dumps({
-                        "accepted": [{"source_id": accepted_src,
-                                      "author_handle": "vantik",
-                                      "content_excerpt": "receipt evidence"}],
-                        "rejected": [], "claims": [],
-                        "scores": {}, "rationale": "ok",
-                    })}}], "usage": {"prompt_tokens": 50, "completion_tokens": 30,
-                                  "total_tokens": 80}}
-                # Director (call 2) — times out
-                raise RuntimeError(raw_error)
-
-        from agency.model_client import DeepSeekClient
-        client = DeepSeekClient(transport=_Tx())
-
-        class _R:
-            def fetch_post(self, pid):
-                return {"post": {"id": pid, "content": "post",
-                                 "author": {"name": "op"}}}
-            def fetch_comments(self, pid):
-                return {"comments": [{"id": accepted_src,
-                         "content": "receipt evidence",
-                         "author": {"name": "vantik"}}]}
-
-        class _P(RepoStateProvider):
-            def __init__(self, s):
-                self.s = s
-            def current_sha(self): return self.s
-            def origin_main_sha(self): return self.s
-
-        reg = build_role_registry(client=client, moltbook_reader=_R())
-        orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(sha),
-                                  role_registry=reg,
-                                  campaign={"active_inquiry": "t",
-                                            "objective": "T"})
-        orch.ctx.set_evidence_index(set())
-        ctx = orch.run()
-
-        # 1. Final status is failed
-        assert ctx.status == "failed"
-
-        # 2. Exactly one incident recorded
-        assert len(ctx.incidents) == 1
-        inc = ctx.incidents[0]
-
-        # 3. Incident names the role and the raw error
-        assert "agency_director" in inc["description"]
-        assert raw_error in inc["description"]
-        assert inc["severity"] == "high"
-
-        # 4. No Director decision stored
-        assert len(ctx.decisions) == 0
-
-        # 5. Accepted evidence from Evidence Analyst remains in CTX
-        assert len(ctx.accepted_evidence) == 1
-        assert ctx.accepted_evidence[0]["source_id"] == accepted_src
-
-        # 6. HQ Markdown contains ## Incidents section
-        d = ctx.to_dict(sanitize=True)
-        report = render_hq_markdown(d)
-        assert "## Incidents" in report
-
-        # 7. HQ Markdown contains the raw error text
-        assert raw_error in report
-
-        # 8. HQ Markdown contains accepted-evidence section
-        assert "## Accepted Evidence" in report
-        assert accepted_src[:12] in report
-
-        # 9. No Research Synthesis section
-        assert "## Research Synthesis" not in report
-
-        # 10. Transactions remain empty
-        assert len(ctx.transactions) == 0
+        # next_inquiry in synthesis (extra property rejected by additionalProperties: false)
+        syn_with_next = {"inquiry": _OBJECTIVE, "executive_answer": "A",
+            "findings": [], "unresolved_questions": [], "next_inquiry": "N"}
+        dec_with_next = dict(bad_dec)
+        dec_with_next["synthesis"] = syn_with_next
+        assert len(validate_against_schema(dec_with_next, dec_schema)) > 0

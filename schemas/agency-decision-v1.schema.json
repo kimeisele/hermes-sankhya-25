@@ -15,7 +15,8 @@
     "risk_assessment": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
     "synthesis": {
       "type": "object",
-      "required": ["inquiry", "executive_answer", "findings", "unresolved_questions", "next_inquiry"],
+      "required": ["inquiry", "executive_answer", "findings", "unresolved_questions"],
+      "additionalProperties": false,
       "properties": {
         "inquiry": {"type": "string"},
         "executive_answer": {"type": "string"},
@@ -24,7 +25,8 @@
           "minItems": 0,
           "items": {
             "type": "object",
-            "required": ["finding_id", "statement", "source_ids", "confidence", "reasoning"],
+            "required": ["finding_id", "statement", "source_ids", "confidence", "reasoning", "finding_kind", "source_quotes"],
+            "additionalProperties": false,
             "properties": {
               "finding_id": {"type": "string"},
               "statement": {"type": "string"},
@@ -35,15 +37,28 @@
                 "uniqueItems": true
               },
               "confidence": {"type": "string", "enum": ["observed", "supported", "inferred", "unknown"]},
-              "reasoning": {"type": "string"}
+              "reasoning": {"type": "string"},
+              "finding_kind": {"type": "string", "enum": ["assertion", "opinion", "proposal", "question", "warning", "unknown"]},
+              "source_quotes": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["source_id", "quote"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "source_id": {"type": "string"},
+                    "quote": {"type": "string", "minLength": 1}
+                  }
+                }
+              }
             }
           }
         },
         "unresolved_questions": {
           "type": "array",
           "items": {"type": "string"}
-        },
-        "next_inquiry": {"type": "string"}
+        }
       }
     }
   },

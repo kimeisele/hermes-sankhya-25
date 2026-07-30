@@ -65,11 +65,22 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
             lines.append("")
             for f in findings:
                 if isinstance(f, dict):
-                    lines.append(f"- **{f.get('finding_id', '?')}** — "
+                    lines.append(f"- **{f.get('finding_id', '?')}** "
+                                 f"[{f.get('finding_kind', '?')}] — "
                                  f"{f.get('statement', '')}")
                     srcs = f.get("source_ids", [])
                     lines.append(f"  - Sources: {', '.join(srcs)}")
+                    sqs = f.get("source_quotes", [])
+                    for sq in sqs:
+                        if isinstance(sq, dict):
+                            lines.append(f"    > `{sq.get('source_id','')[:12]}`: "
+                                         f"{sq.get('quote','')[:200]}")
                     lines.append(f"  - Confidence: {f.get('confidence', '?')}")
+                    lines.append(f"  - Source basis: {f.get('source_basis', '?')}")
+                    lines.append(f"  - Distinct authors: "
+                                 f"{f.get('distinct_author_count', '?')}")
+                    lines.append(f"  - Independent external contributors: "
+                                 f"{f.get('independent_external_contributor_count', '?')}")
                     lines.append(f"  - Reasoning: {f.get('reasoning', '')}")
                     lines.append("")
         questions = synthesis.get("unresolved_questions", [])
@@ -77,10 +88,6 @@ def render_hq_markdown(ctx_dict: dict[str, Any]) -> str:
             lines.append("### Unresolved Questions")
             for q in questions:
                 lines.append(f"- {q}")
-            lines.append("")
-        next_inq = synthesis.get("next_inquiry", "")
-        if next_inq:
-            lines.append(f"**Next Inquiry:** {next_inq}")
             lines.append("")
 
     # Engagement proposals

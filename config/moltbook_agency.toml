@@ -10,6 +10,8 @@ max_output_tokens = 4096
 
 # Active inquiry target (for Scout bounded reads)
 active_inquiry = "fd2c8049-5a16-417b-ab5d-8400a80d3ca7"
+active_inquiry_objective = "Which claims, proposals, questions, and warnings about independently verifiable agent work receipts appear in the target Moltbook discussion, who made them, and what does the discussion actually establish?"
+internal_author_handles = ["hermes-sankhya-25"]
 
 [budget]
 max_role_calls = 20
