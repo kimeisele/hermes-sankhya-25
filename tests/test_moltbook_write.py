@@ -1105,3 +1105,150 @@ def test_dry_run_transcript(tmp_path: Path) -> None:
     sys.stdout.write("\n=== VERIFY (second — rejected) ===\n")
     assert m.cmd_verify(client, store, txn_id, "11") == 1
     print("COMPLETE")
+
+
+# ---------------------------------------------------------------------------
+# Historical indeterminate comment reconciliation — real post_id shape
+# ---------------------------------------------------------------------------
+
+def test_derive_parent_from_create_response_real_shape(tmp_path: Path) -> None:
+    """Real create shape (post_id only) yields parent post id."""
+    m = _load_bridge_module()
+    txn = m.Transaction(
+        transaction_id="t1", content_id="c1", content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=_load_fixture("comment_create_real_shape.json"),
+    )
+    assert m._derive_parent_from_create_response(txn) == "parent_post_fixture_id"
+
+
+def test_derive_parent_from_create_response_ambiguous(tmp_path: Path) -> None:
+    """Both parent_post_id and post_id present but different → fail closed."""
+    m = _load_bridge_module()
+    raw = dict(_load_fixture("comment_create_real_shape.json"))
+    raw["comment"]["parent_post_id"] = "other_parent"
+    txn = m.Transaction(
+        transaction_id="t1", content_id="c1", content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=raw,
+    )
+    assert m._derive_parent_from_create_response(txn) == ""
+
+
+def test_derive_parent_from_create_response_missing(tmp_path: Path) -> None:
+    """Neither parent_post_id nor post_id present → fail closed."""
+    m = _load_bridge_module()
+    raw = dict(_load_fixture("comment_create_real_shape.json"))
+    raw["comment"].pop("post_id", None)
+    raw["comment"].pop("parent_post_id", None)
+    txn = m.Transaction(
+        transaction_id="t1", content_id="c1", content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=raw,
+    )
+    assert m._derive_parent_from_create_response(txn) == ""
+
+
+def test_fetch_content_object_recovers_empty_parent_via_list(tmp_path: Path) -> None:
+    """Comment txn with empty parent_post_id reconciles via comments list."""
+    m = _load_bridge_module()
+    # fetch_post returns a post without comments → falls back to list
+    parent_without = {"success": True,
+                      "post": {"id": "parent_post_fixture_id", "comments": []}}
+    client = _MockClient(
+        fetch_post_resp=parent_without,
+        fetch_comments_resp=_load_fixture("comment_list_real_shape_verified.json"),
+    )
+    txn = m.Transaction(
+        transaction_id="t1",
+        content_id="comment_fixture_real_shape",
+        content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=_load_fixture("comment_create_real_shape.json"),
+    )
+    content = m._fetch_content_object(client, txn)
+    assert content["id"] == "comment_fixture_real_shape"
+    assert content["verification_status"] == "verified"
+    assert "parent_post_fixture_id" in client.fetch_comments_calls
+
+
+def test_cmd_verify_reconciles_indeterminate_comment_no_resubmit(tmp_path: Path) -> None:
+    """Indeterminate comment txn is recovered read-only (no POST /verify)."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    client = _MockClient(
+        fetch_post_resp={"success": True,
+                         "post": {"id": "parent_post_fixture_id", "comments": []}},
+        fetch_comments_resp=_load_fixture("comment_list_real_shape_verified.json"),
+    )
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(
+        transaction_id="hist1",
+        content_id="comment_fixture_real_shape",
+        content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=_load_fixture("comment_create_real_shape.json"),
+        state="indeterminate",
+    )
+    store.save(txn)
+
+    assert m.cmd_verify(client, store, "hist1", "anything") == 0
+    loaded = store.load("hist1")
+    assert loaded.state == "verified"
+    assert client.verify_calls == []  # no POST /verify
+
+
+def test_cmd_verify_indeterminate_comment_not_verified_stays(tmp_path: Path) -> None:
+    """Indeterminate comment stays indeterminate when content not verified."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    client = _MockClient(
+        fetch_post_resp={"success": True,
+                         "post": {"id": "parent_post_fixture_id", "comments": []}},
+        fetch_comments_resp=_load_fixture("comment_list_verified.json"),
+    )
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(
+        transaction_id="hist2",
+        content_id="comment_fixture_real_shape",
+        content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=_load_fixture("comment_create_real_shape.json"),
+        state="indeterminate",
+    )
+    store.save(txn)
+
+    assert m.cmd_verify(client, store, "hist2", "anything") == 1
+    loaded = store.load("hist2")
+    assert loaded.state == "indeterminate"
+    assert client.verify_calls == []
+
+
+def test_cmd_verify_other_terminal_states_still_rejected(tmp_path: Path) -> None:
+    """Verified/other terminal comment txns are still rejected."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: "tok")
+
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(
+        transaction_id="done1", content_id="c1", content_type="comment",
+        parent_post_id="p", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response={}, state="verified", verified_at=123.0,
+    )
+    store.save(txn)
+    client = _MockClient()
+    assert m.cmd_verify(client, store, "done1", "x") == 1
+    assert client.verify_calls == []
+    assert client.fetch_post_calls == []
