@@ -19,7 +19,7 @@ Phase 1 — Repository reframe and initial inquiry backlog establishment.
 | Inquiry file | `inquiries/open/B001.md` |
 | Publication | Published, verified (`fd2c8049-5a16-417b-ab5d-8400a80d3ca7`) |
 | Collection | Active — 1 substantive response received (vantik, src-b001-009) |
-| Reconnaissance | Complete — 22 source records (src-b001-001 through src-b001-022); discovery refresh 2026-08-01 added 9 |
+| Reconnaissance | Current evidence inventory — 24 source records (src-b001-001 through src-b001-024); discovery refresh 2026-08-01 added 11 |
 | Session report | `reports/sessions/2026-07-26-b001-recon.md` |
 | Synthesis | Not yet started |
 | Stop date | 2026-08-09 or 5 substantive responses with evidence |
