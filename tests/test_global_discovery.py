@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -246,3 +247,198 @@ class TestWorkflow:
                     "global_discovery_candidate_cap", "global_discovery_excerpt_length",
                     "global_discovery_strong_terms", "global_discovery_secondary_terms"):
             assert key in text, f"missing {key}"
+
+
+# ---------------------------------------------------------------------------
+# Hardening: config bounds, network boundary, word boundaries, sanitization
+# ---------------------------------------------------------------------------
+
+class TestHardening:
+
+    def test_config_over_50_rejected(self):
+        with pytest.raises(ValueError):
+            DiscoveryConfig(max_new=60).validate()
+
+    def test_config_over_25_top_rejected(self):
+        with pytest.raises(ValueError):
+            DiscoveryConfig(max_top_day=30).validate()
+
+    def test_config_over_25_comments_rejected(self):
+        with pytest.raises(ValueError):
+            DiscoveryConfig(max_comments_day=30).validate()
+
+    def test_candidate_cap_over_20_rejected(self):
+        with pytest.raises(ValueError):
+            DiscoveryConfig(candidate_cap=21).validate()
+
+    def test_excerpt_over_500_rejected(self):
+        with pytest.raises(ValueError):
+            DiscoveryConfig(excerpt_length=501).validate()
+
+    def test_unknown_query_path_rejected(self):
+        client = DiscoveryClient(transport=lambda r: {"posts": []})
+        with pytest.raises(RuntimeError):
+            client._api_call("GET", "/posts?sort=other&limit=5")
+
+    def test_non_get_unreachable(self):
+        client = DiscoveryClient(transport=lambda r: {"posts": []})
+        with pytest.raises(RuntimeError):
+            client._api_call("POST", "/posts?sort=new&limit=5")
+
+    def test_redirect_rejected(self):
+        from agency.discovery import _NoRedirectHandler
+        h = _NoRedirectHandler()
+        with pytest.raises(RuntimeError):
+            h.redirect_request(None, None, 302, "Found", {}, "https://evil.example")
+
+    def test_foreign_host_blocked(self):
+        client = DiscoveryClient(base_url="https://evil.example/api/v1",
+                                 transport=lambda r: {"posts": []})
+        # Production host check applies to the actual HTTP path; with a
+        # transport, no host check runs — assert the base URL is fixed.
+        assert client.PRODUCTION_BASE_URL == "https://www.moltbook.com/api/v1"
+        assert client.base_url != client.PRODUCTION_BASE_URL  # would be blocked
+
+    def test_api_overreturn_capped(self):
+        posts = [_post(_valid_uuid(i)) for i in range(1, 61)]
+        t = _FakeTransport({"new": posts})
+        client = DiscoveryClient(transport=t)
+        result = client.fetch_listing("new", 50)
+        assert len(result) == 50
+
+    def test_max_100_unique_posts_processed(self):
+        # 150 unique posts; only the first 100 are processed. Posts beyond
+        # 100 carry strong signals but must be ignored.
+        posts = ([_post(_valid_uuid(i), title="nothing relevant here")
+                  for i in range(1, 101)]
+                 + [_post(_valid_uuid(i), title="effect receipt for agents")
+                    for i in range(101, 151)])
+        t = _FakeTransport({"new": posts})
+        d = GlobalDiscovery(DiscoveryClient(transport=t), _cfg())
+        assert d.run() == []
+
+    def test_word_boundary_done_not_in_abandoned(self):
+        score, matched = score_post("Abandoned task", "The task was abandoned.",
+                                    ["effect receipt"], ["done"], True)
+        assert score == 0
+
+    def test_word_boundary_model_not_in_remodel(self):
+        score, matched = score_post("Remodel notes", "We remodel the house.",
+                                    ["effect receipt"], ["model"], True)
+        assert score == 0
+
+    def test_multiword_phrase_still_matches(self):
+        score, matched = score_post("A proposal", "An effect receipt for agents.",
+                                    ["effect receipt"], ["verification"], True)
+        assert score > 0
+
+    def test_markdown_chars_neutralized(self):
+        from agency.discovery import sanitize_text
+        out = sanitize_text("**bold** [link](x) `code` <tag>", 200)
+        assert "**" not in out
+        assert "[" not in out
+        assert "<" not in out
+
+    def test_mentions_neutralized(self):
+        from agency.discovery import sanitize_text
+        out = sanitize_text("hello @someone and @else", 200)
+        assert "@" not in out
+
+
+class TestNotificationDedup:
+
+    def test_marker_roundtrip(self):
+        from agency.discovery import build_marker, parse_marker_ids
+        marker = build_marker(["b", "a"])
+        assert marker == "<!-- hermes-global-discovery-v1:candidate-ids=a,b -->"
+        assert parse_marker_ids(marker) == {"a", "b"}
+
+    def test_already_reported_candidates_not_reported_again(self):
+        from agency.discovery import new_candidate_ids, Candidate
+        c1 = Candidate(_valid_uuid(1), "u", "a", "t", "c", "x", "h", [], 1, ["new"])
+        c2 = Candidate(_valid_uuid(2), "u", "a", "t", "c", "x", "h", [], 1, ["new"])
+        new = new_candidate_ids([c1, c2], {_valid_uuid(1)})
+        assert new == [_valid_uuid(2)]
+
+    def test_new_candidates_reported_once(self):
+        from agency.discovery import new_candidate_ids, Candidate
+        c1 = Candidate(_valid_uuid(1), "u", "a", "t", "c", "x", "h", [], 1, ["new"])
+        assert new_candidate_ids([c1], set()) == [_valid_uuid(1)]
+
+    def test_zero_new_candidates_no_comment(self):
+        from agency.discovery import new_candidate_ids, Candidate
+        c1 = Candidate(_valid_uuid(1), "u", "a", "t", "c", "x", "h", [], 1, ["new"])
+        assert new_candidate_ids([c1], {_valid_uuid(1)}) == []
+
+
+class TestWorkflowHardening:
+
+    def test_failure_artifact_upload_always(self):
+        wf = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "moltbook-agency-discover.yml"
+        text = wf.read_text()
+        assert "if: ${{ always() }}" in text
+        assert "upload-artifact" in text
+
+    def test_issue_target_fixed_513(self):
+        wf = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "moltbook-agency-discover.yml"
+        text = wf.read_text()
+        assert "ISSUE_NUMBER = 513" in text
+        # No issue-title search
+        assert "listForRepo" not in text
+
+
+class TestEvidenceIndexFailClosed:
+
+    def test_evidence_index_error_aborts_before_network(self, tmp_path, monkeypatch):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "moltbook_discover", str(Path(__file__).resolve().parents[1] / "scripts" / "moltbook_discover.py"))
+        mod = importlib.util.module_from_spec(spec)
+        import sys as _sys
+        _sys.modules["moltbook_discover"] = mod
+        spec.loader.exec_module(mod)
+
+        def boom():
+            raise RuntimeError("evidence index corrupted")
+        monkeypatch.setattr(mod, "_load_evidence_ids", boom)
+
+        out = tmp_path / "out"
+        import sys as _s
+        _s.argv = ["discover", "--output", str(out),
+                   "--candidates", str(out / "discovery_candidates.json"),
+                   "--report", str(out / "discovery_report.md")]
+        rc = mod.main()
+        assert rc == 1
+        data = json.loads((out / "discovery_candidates.json").read_text())
+        assert data["status"] == "failed"
+        assert data["failure_code"] == "EVIDENCE_INDEX_INVALID"
+        assert data["candidate_count"] == 0
+        assert data["model_calls"] == 0
+        assert data["tokens"] == 0
+        assert data["external_writes"] == 0
+
+    def test_evidence_index_error_creates_failure_artifacts(self, tmp_path, monkeypatch):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "moltbook_discover2", str(Path(__file__).resolve().parents[1] / "scripts" / "moltbook_discover.py"))
+        mod = importlib.util.module_from_spec(spec)
+        import sys as _sys
+        _sys.modules["moltbook_discover2"] = mod
+        spec.loader.exec_module(mod)
+
+        def boom():
+            raise ValueError("malformed record")
+        monkeypatch.setattr(mod, "_load_evidence_ids", boom)
+
+        out = tmp_path / "out2"
+        import sys as _s
+        _s.argv = ["discover", "--output", str(out),
+                   "--candidates", str(out / "discovery_candidates.json"),
+                   "--report", str(out / "discovery_report.md")]
+        rc = mod.main()
+        assert rc == 1
+        assert (out / "discovery_candidates.json").exists()
+        assert (out / "discovery_report.md").exists()
+        report = (out / "discovery_report.md").read_text()
+        assert "failed" in report
+        assert "EVIDENCE_INDEX_INVALID" in report

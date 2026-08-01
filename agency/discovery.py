@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -50,12 +51,22 @@ class DiscoveryConfig:
         )
 
     def validate(self) -> None:
-        if self.max_new < 0 or self.max_top_day < 0 or self.max_comments_day < 0:
-            raise ValueError("discovery listing limits must be non-negative")
-        if self.candidate_cap <= 0:
-            raise ValueError("global_discovery_candidate_cap must be positive")
-        if self.excerpt_length <= 0:
-            raise ValueError("global_discovery_excerpt_length must be positive")
+        if not (0 <= self.max_new <= 50):
+            raise ValueError("global_discovery_max_new must be within 0..50")
+        if not (0 <= self.max_top_day <= 25):
+            raise ValueError("global_discovery_max_top_day must be within 0..25")
+        if not (0 <= self.max_comments_day <= 25):
+            raise ValueError("global_discovery_max_comments_day must be within 0..25")
+        if not (1 <= self.candidate_cap <= 20):
+            raise ValueError("global_discovery_candidate_cap must be within 1..20")
+        if not (1 <= self.excerpt_length <= 500):
+            raise ValueError("global_discovery_excerpt_length must be within 1..500")
+        for t in self.strong_terms + self.secondary_terms:
+            if not isinstance(t, str) or not t.strip():
+                raise ValueError("discovery terms must be non-empty strings")
+        for h in self.internal_handles:
+            if not isinstance(h, str) or not h.strip():
+                raise ValueError("discovery internal handles must be non-empty strings")
 
 
 # ---------------------------------------------------------------------------
@@ -64,16 +75,25 @@ class DiscoveryConfig:
 
 
 class DiscoveryClient:
-    """GET-only client for predefined Moltbook global listing paths."""
+    """GET-only client for the three predefined Moltbook listing paths.
 
-    # Allowed paths — no generic URLs, no non-GET methods.
-    _ALLOWED_PATHS = (
-        "/posts?sort=new",
-        "/posts?sort=top&time=day",
-        "/posts?sort=comments&time=day",
-    )
+    Strict allowlist: only the exact new/top-day/comments-day listing
+    forms may be requested, each with a hard maximum limit.  Redirects
+    are rejected (no following to other hosts).  Over-returned listings
+    are truncated to the requested limit.
+    """
 
-    def __init__(self, base_url: str = "https://www.moltbook.com/api/v1",
+    # Production base URL is fixed.
+    PRODUCTION_BASE_URL = "https://www.moltbook.com/api/v1"
+
+    # Strict structured allowlist: sort -> (extra query, hard max limit)
+    _LISTING_SPECS = {
+        "new": ("", 50),
+        "top": ("&time=day", 25),
+        "comments": ("&time=day", 25),
+    }
+
+    def __init__(self, base_url: str = PRODUCTION_BASE_URL,
                  timeout: float = 30.0,
                  transport: Callable[..., dict[str, Any]] | None = None) -> None:
         self.base_url = base_url.rstrip("/")
@@ -81,23 +101,26 @@ class DiscoveryClient:
         self._transport = transport
 
     def fetch_listing(self, sort: str, limit: int) -> list[dict[str, Any]]:
-        """Fetch one predefined listing. Returns a validated list of posts."""
-        if sort not in ("new", "top", "comments"):
+        """Fetch one predefined listing with a hard cap. Returns validated posts."""
+        if sort not in self._LISTING_SPECS:
             raise ValueError(f"unknown listing sort: {sort}")
-        query = f"sort={sort}"
-        if sort in ("top", "comments"):
-            query += "&time=day"
-        query += f"&limit={limit}"
-        path = f"/posts?{query}"
+        _, hard_max = self._LISTING_SPECS[sort]
+        if limit > hard_max:
+            raise ValueError(f"limit {limit} exceeds hard maximum {hard_max} for {sort}")
+        extra, _ = self._LISTING_SPECS[sort]
+        path = f"/posts?sort={sort}{extra}&limit={limit}"
         raw = self._api_call("GET", path)
-        return _parse_listing(raw)
+        posts = _parse_listing(raw)
+        # Hard-cap over-returned listings to the requested limit.
+        return posts[:limit]
 
     # -- transport --------------------------------------------------------
 
     def _api_call(self, method: str, path: str) -> dict[str, Any]:
         if method != "GET":
             raise RuntimeError(f"DiscoveryClient only supports GET, got {method}")
-        if not path.startswith("/posts?"):
+        # Path must exactly match one of the three allowed listing forms.
+        if not self._is_allowed_path(path):
             raise RuntimeError(f"DiscoveryClient path not allowed: {path}")
 
         import urllib.error
@@ -112,7 +135,15 @@ class DiscoveryClient:
                         k in resp for k in ("posts", "success")):
                     raise RuntimeError(f"API {method} {path} → {resp['error']}")
                 return resp
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            # Only the production host may be contacted, and redirects are
+            # rejected (no following to any other host).
+            import urllib.parse
+            allowed_netloc = urllib.parse.urlparse(self.PRODUCTION_BASE_URL).netloc
+            actual_netloc = urllib.parse.urlparse(url).netloc
+            if actual_netloc != allowed_netloc:
+                raise RuntimeError(f"DiscoveryClient host not allowed: {actual_netloc}")
+            opener = urllib.request.build_opener(_NoRedirectHandler())
+            with opener.open(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             err = exc.read().decode("utf-8", errors="replace")
@@ -121,6 +152,26 @@ class DiscoveryClient:
             raise RuntimeError(f"API unreachable {method} {path}: {exc}") from exc
         except TimeoutError:
             raise RuntimeError(f"API timeout {method} {path} after {self.timeout}s")
+
+    @staticmethod
+    def _is_allowed_path(path: str) -> bool:
+        for sort, (extra, hard_max) in DiscoveryClient._LISTING_SPECS.items():
+            if extra:
+                for limit in range(0, hard_max + 1):
+                    if path == f"/posts?sort={sort}{extra}&limit={limit}":
+                        return True
+            else:
+                for limit in range(0, hard_max + 1):
+                    if path == f"/posts?sort={sort}&limit={limit}":
+                        return True
+        return False
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject any HTTP redirect instead of following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError(f"redirect not allowed: {code} → {newurl}")
 
 
 def _parse_listing(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -165,6 +216,20 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text.lower())
 
 
+def _term_in(text_norm: str, term: str) -> bool:
+    """Word/phrase-boundary match for a normalized term.
+
+    Single-word terms match only at word boundaries; multi-word phrases
+    match as exact normalized substrings between word boundaries.
+    """
+    term_norm = _normalize(term).strip()
+    if not term_norm:
+        return False
+    if " " in term_norm:
+        return f" {term_norm} " in f" {text_norm} "
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(term_norm)}(?![a-z0-9])", text_norm))
+
+
 def score_post(title: str, content: str, strong_terms: list[str],
                secondary_terms: list[str],
                has_agent_context: bool) -> tuple[int, list[str]]:
@@ -175,8 +240,8 @@ def score_post(title: str, content: str, strong_terms: list[str],
     Returns (score, matched_terms); a zero score means not qualified.
     """
     hay = _normalize(f"{title}\n{content}")
-    strong_hits = [t for t in strong_terms if t in hay]
-    secondary_hits = [t for t in secondary_terms if t in hay]
+    strong_hits = [t for t in strong_terms if _term_in(hay, t)]
+    secondary_hits = [t for t in secondary_terms if _term_in(hay, t)]
 
     if strong_hits:
         score = 10 + len(strong_hits) * 2
@@ -196,6 +261,57 @@ def _excerpt(content: str, length: int) -> str:
 
 def _content_sha(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Issue-notification sanitization (untrusted external values)
+# ---------------------------------------------------------------------------
+
+
+def sanitize_text(value: str, max_length: int) -> str:
+    """Neutralize untrusted external text for issue comments.
+
+    Strips control characters and newlines, removes Markdown special
+    characters, neutralizes ``@`` (no account mentions), and truncates.
+    """
+    if not isinstance(value, str):
+        value = ""
+    value = re.sub(r"[\x00-\x1f\x7f]", " ", value)
+    value = re.sub(r"[*_`\[\]()#<>~|\\{}]", "", value)
+    value = value.replace("@", "")
+    value = re.sub(r"\s+", " ", value)
+    return value[:max_length].strip()
+
+
+_MARKER_PREFIX = "<!-- hermes-global-discovery-v1:candidate-ids="
+_MARKER_SUFFIX = " -->"
+
+
+def build_marker(ids: list[str]) -> str:
+    """Build the machine-readable dedup marker with sorted UUIDs."""
+    return f"{_MARKER_PREFIX}{','.join(sorted(ids))}{_MARKER_SUFFIX}"
+
+
+def parse_marker_ids(text: str) -> set[str]:
+    """Extract already-reported candidate IDs from a marker in a comment body."""
+    if not isinstance(text, str):
+        return set()
+    start = text.find(_MARKER_PREFIX)
+    if start < 0:
+        return set()
+    body = text[start + len(_MARKER_PREFIX):]
+    end = body.find(_MARKER_SUFFIX)
+    if end < 0:
+        return set()
+    raw = body[:end]
+    return {i for i in raw.split(",") if i}
+
+
+def new_candidate_ids(candidates: list[Candidate],
+                      reported_ids: set[str]) -> list[str]:
+    """Candidate IDs never reported before, in deterministic order."""
+    seen = set(reported_ids)
+    return [c.post_id for c in candidates if c.post_id not in seen]
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +352,14 @@ class GlobalDiscovery:
                     listing_src[pid] = []
                 listing_src[pid].append(sort)
 
-        # Dedup, filter, cap at 100 objects before relevance
+        # Dedup, filter; process at most 100 unique post objects before
+        # the relevance check.
         candidates_pool: list[Candidate] = []
+        processed = 0
         for pid, p in by_id.items():
-            if len(candidates_pool) >= 100:
+            if processed >= 100:
                 break
+            processed += 1
             if p.get("is_deleted") or p.get("is_spam"):
                 continue
             author = _author_name(p)
@@ -285,13 +404,13 @@ def _author_name(post: dict[str, Any]) -> str:
 
 
 def _has_agent_context(title: str, content: str) -> bool:
-    """Unambiguous agent/task/tool context signals."""
+    """Unambiguous agent/task/tool context signals (word-bounded)."""
     hay = _normalize(f"{title}\n{content}")
     signals = (
         "agent", "task", "tool", "runner", "pipeline", "workflow",
         "automation", "deploy", "bot", "llm", "subagent", "model",
     )
-    return any(s in hay for s in signals)
+    return any(_term_in(hay, s) for s in signals)
 
 
 def _iso_key(created_at: str) -> str:

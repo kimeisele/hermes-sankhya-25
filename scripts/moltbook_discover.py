@@ -19,6 +19,20 @@ from agency.discovery import (  # noqa: E402
     candidates_to_json, render_report,
 )
 
+FAILURE_CODE = "EVIDENCE_INDEX_INVALID"
+
+
+def _failure_artifacts() -> dict:
+    return {
+        "status": "failed",
+        "failure_code": FAILURE_CODE,
+        "candidate_count": 0,
+        "model_calls": 0,
+        "tokens": 0,
+        "external_writes": 0,
+        "candidates": [],
+    }
+
 
 def _load_config() -> dict:
     import tomllib
@@ -45,12 +59,9 @@ def _load_config() -> dict:
 
 
 def _load_evidence_ids() -> set[str]:
+    """Load the evidence index; ANY failure is fatal (fail-closed)."""
     from agency.evidence_index import load_evidence_index
-    try:
-        return load_evidence_index()
-    except Exception as exc:
-        print(f"Error loading evidence index: {exc}", file=sys.stderr)
-        return set()
+    return load_evidence_index()
 
 
 def main() -> int:
@@ -63,27 +74,55 @@ def main() -> int:
                         help="explicit candidates JSON path")
     args = parser.parse_args()
 
-    cfg = _load_config()
-    dcfg = DiscoveryConfig.from_dict(cfg)
-    dcfg.validate()
-
-    if not dcfg.enabled:
-        print("Global discovery disabled", file=sys.stderr)
-        return 0
-
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
     candidates_path = Path(args.candidates) if args.candidates else out_dir / "discovery_candidates.json"
     report_path = Path(args.report) if args.report else out_dir / "discovery_report.md"
 
+    # Config load + validation
+    try:
+        cfg = _load_config()
+        dcfg = DiscoveryConfig.from_dict(cfg)
+        dcfg.validate()
+    except Exception as exc:
+        print(f"Global discovery config error: {exc}", file=sys.stderr)
+        candidates_path.write_text(json.dumps(_failure_artifacts(), indent=2))
+        report_path.write_text("# Moltbook Global Discovery — FAILED\n\n"
+                               f"- status: failed\n- failure_code: {FAILURE_CODE}\n"
+                               "- candidate_count: 0\n- model_calls: 0\n- tokens: 0\n"
+                               "- external_writes: 0\n")
+        return 1
+
+    if not dcfg.enabled:
+        print("Global discovery disabled", file=sys.stderr)
+        candidates_path.write_text(json.dumps(candidates_to_json([]), indent=2))
+        report_path.write_text(render_report([], dcfg))
+        return 0
+
+    # Evidence index: fail-closed — any error aborts before any listing GET.
+    try:
+        known_ids = _load_evidence_ids()
+    except Exception:
+        print("Global discovery failed: evidence index invalid", file=sys.stderr)
+        candidates_path.write_text(json.dumps(_failure_artifacts(), indent=2))
+        report_path.write_text("# Moltbook Global Discovery — FAILED\n\n"
+                               f"- status: failed\n- failure_code: {FAILURE_CODE}\n"
+                               "- candidate_count: 0\n- model_calls: 0\n- tokens: 0\n"
+                               "- external_writes: 0\n")
+        return 1
+
     client = DiscoveryClient()
-    known_ids = _load_evidence_ids()
     discovery = GlobalDiscovery(client, dcfg, known_ids=known_ids)
 
     try:
         candidates = discovery.run()
     except Exception as exc:
         print(f"Global discovery failed: {exc}", file=sys.stderr)
+        candidates_path.write_text(json.dumps(_failure_artifacts(), indent=2))
+        report_path.write_text("# Moltbook Global Discovery — FAILED\n\n"
+                               "- status: failed\n- failure_code: DISCOVERY_RUN_FAILED\n"
+                               "- candidate_count: 0\n- model_calls: 0\n- tokens: 0\n"
+                               "- external_writes: 0\n")
         return 1
 
     candidates_path.write_text(json.dumps(candidates_to_json(candidates),
