@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 
 _MOLTBOOK_URL_RE = re.compile(r"moltbook\.com/post/([a-f0-9-]+)")
+# Moltbook content IDs are UUIDs (hex + hyphens)
+_VALID_ID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 
 
 def load_evidence_index(repo_root: str | Path | None = None) -> set[str]:
@@ -58,6 +60,22 @@ def load_evidence_index(repo_root: str | Path | None = None) -> set[str]:
         content_id = match.group(1)
         if content_id:
             ids.add(content_id)
+
+        # Comment records may additionally carry an explicit comment_id
+        # (a known external comment).  Parent-post ID from the URL is
+        # still indexed; the comment ID is the dedup key for the Scout.
+        if content_type == "comment":
+            comment_id = data.get("comment_id", "")
+            if comment_id:
+                # comment_id must be a non-empty, well-formed Moltbook UUID
+                if not isinstance(comment_id, str) or not comment_id.strip():
+                    raise ValueError(
+                        f"B001 source record {record_file.name} has malformed comment_id")
+                if not _VALID_ID_RE.fullmatch(comment_id):
+                    raise ValueError(
+                        f"B001 source record {record_file.name} has malformed comment_id: "
+                        f"{comment_id}")
+                ids.add(comment_id)
 
         # Also add explicit source_id if present
         source_id = data.get("source_id", "")

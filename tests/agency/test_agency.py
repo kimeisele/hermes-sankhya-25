@@ -196,6 +196,10 @@ class TestBudget:
         orch = AgencyOrchestrator(budget=budget, base_sha=sha,
                                   repo_provider=_fixed_provider(sha),
                                   role_registry=build_role_registry())
+        orch.ctx.add_inbox([{"id": "c1", "url": "https://x.com/c1",
+                             "author_handle": "ext", "untrusted": True,
+                             "content_excerpt": "Evidence.",
+                             "raw_content": "Evidence."}])
         ctx = orch.run()
         assert ctx.status == "budget_exhausted"
         assert ctx.events.has_event_type("BUDGET_EXHAUSTED")
@@ -218,6 +222,10 @@ class TestFailClosed:
         reg["agency_director"] = FailingDirector()
         orch = AgencyOrchestrator(base_sha=sha, repo_provider=_fixed_provider(sha),
                                   role_registry=reg)
+        orch.ctx.add_inbox([{"id": "c1", "url": "https://x.com/c1",
+                             "author_handle": "ext", "untrusted": True,
+                             "content_excerpt": "Evidence.",
+                             "raw_content": "Evidence."}])
         ctx = orch.run()
         assert ctx.status == "failed"
 
@@ -233,6 +241,10 @@ class TestFailClosed:
         reg["agency_director"] = BadDirector()
         orch = AgencyOrchestrator(base_sha=sha, repo_provider=_fixed_provider(sha),
                                   role_registry=reg)
+        orch.ctx.add_inbox([{"id": "c1", "url": "https://x.com/c1",
+                             "author_handle": "ext", "untrusted": True,
+                             "content_excerpt": "Evidence.",
+                             "raw_content": "Evidence."}])
         ctx = orch.run()
         assert ctx.status == "failed"
 
@@ -301,10 +313,11 @@ def _make_finding(fid, statement, src_ids, kind, quotes, reasoning="R"):
 
 def _run_epi(evidence_accepted, director_resp, canonical_items,
              call_log=None, internal_handles=None):
-    """Run epistemic test with span-based EA output.
+    """Run epistemic test through the real orchestrator apply path.
 
-    evidence_accepted items must use span_ids (not claim_text).
-    Director source_quotes must NOT contain quote.
+    Fixtures are injected via the inbox so the Scout's Moltbook-read
+    internal filtering does not apply (internal classification is still
+    preserved via the campaign's internal_author_handles).
     """
     from agency.model_client import DeepSeekClient
     if call_log is None:
@@ -327,29 +340,30 @@ def _run_epi(evidence_accepted, director_resp, canonical_items,
 
     client = DeepSeekClient(transport=_Tx())
 
-    class _R:
-        def fetch_post(self, pid):
-            return {
-                "post": {
-                    "id": pid,
-                    "content": "body",
-                    "author": {"name": "op"},
-                }
-            }
-        def fetch_comments(self, pid):
-            return {"comments": [{"id": c["id"], "content": c["content_excerpt"],
-                     "author": {"name": c["author_handle"]}} for c in canonical_items]}
-
     sha = _make_sha("epi")
     class _P(RepoStateProvider):
         def __init__(self, s): self.s = s
         def current_sha(self): return self.s
         def origin_main_sha(self): return self.s
 
-    reg = build_role_registry(client=client, moltbook_reader=_R())
+    reg = build_role_registry(client=client, moltbook_reader=None)
     orch = AgencyOrchestrator(base_sha=sha, repo_provider=_P(sha),
         role_registry=reg, campaign={"active_inquiry": "t",
         "objective": _OBJECTIVE, "internal_author_handles": internal_handles})
+    # Post fixture (accounts for the "t" rejected entry in the EA output)
+    orch.ctx.add_inbox([{"id": "t", "url": "https://www.moltbook.com/post/t",
+                         "author_handle": "op", "content_type": "post",
+                         "untrusted": True, "content_excerpt": "body",
+                         "raw_content": "body"}])
+    # Canonical comment fixtures
+    for c in canonical_items:
+        orch.ctx.add_inbox([{
+            "id": c["id"], "url": c["url"],
+            "author_handle": c["author_handle"],
+            "content_type": c.get("content_type", "comment"), "untrusted": True,
+            "content_excerpt": c["content_excerpt"],
+            "raw_content": c["content_excerpt"],
+        }])
     orch.ctx.set_evidence_index(set())
     return orch.run()
 

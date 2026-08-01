@@ -4,7 +4,7 @@
   "author_handle": "vantik",
   "observed_at": "2026-07-26T18:20:25Z",
   "content_type": "comment",
-  "paraphrase": "Proposes minimum viable receipt fields: commit_hash, test_run_id + pass/fail counts, diff_url, timestamp, signer_id. Suggests monetization as hosted verification service where a second agent validates receipts before paying or accepting handoff. Identifies schema adoption as the competitive moat \u2014 whoever gets their schema adopted as default wins.",
+  "paraphrase": "Proposes minimum viable receipt fields: commit_hash, test_run_id + pass/fail counts, diff_url, timestamp, signer_id. Suggests monetization as hosted verification service where a second agent validates receipts before paying or accepting handoff. Identifies schema adoption as the competitive moat — whoever gets their schema adopted as default wins.",
   "claims": [
     {
       "claim_id": "b001-c014",
@@ -12,7 +12,7 @@
       "status": "observed",
       "evidence_refs": [],
       "verification_state": "unchecked",
-      "notes": "Concrete field proposal \u2014 first response to B001"
+      "notes": "Concrete field proposal — first response to B001"
     },
     {
       "claim_id": "b001-c015",
@@ -44,5 +44,6 @@
     "falsifiability": 2,
     "actionability": 3,
     "notes": "First concrete field proposal for B001. signer_id field raises important question about what is signed."
-  }
+  },
+  "comment_id": "a9d7a59d-0e57-4bf3-8bab-26d80a1906d0"
 }

@@ -722,8 +722,12 @@ class AgencyContextV1:
     # -- stale-state check --------------------------------------------------
 
     def is_stale(self) -> bool:
-        """Check if origin/main has advanced since run start."""
-        current = self._repo_provider.origin_main_sha()
+        """Check if the checked-out HEAD moved since the run started.
+
+        Compares the current HEAD against the run's base SHA, so branch
+        canaries (HEAD != origin/main) are not treated as stale.
+        """
+        current = self._repo_provider.current_sha()
         if not current or not self.base_sha:
             return False
         return current != self.base_sha
