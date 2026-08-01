@@ -511,6 +511,20 @@ def cmd_verify(client: MoltbookClient, store: TransactionStore,
         return 1
 
     if txn.is_terminal:
+        # indeterminate comment transactions may be recovered read-only:
+        # the content may be verified on Moltbook even though the local
+        # bridge could not confirm it.  Never resubmits POST /verify.
+        if txn.state == "indeterminate" and txn.content_type == "comment":
+            # Credential guard before any read-only reconciliation —
+            # same contract as pending/attempted: no credential → zero
+            # network calls → state unchanged.
+            if _get_token() is None:
+                print(json.dumps({
+                    "error": "No Moltbook credential. Set MOLTBOOK_TOKEN or configure ~/.config/moltbook/credentials.json",
+                    "transaction_state": txn.state,
+                }))
+                return 1
+            return _reconcile_attempted(client, store, txn)
         print(json.dumps({
             "error": f"Transaction terminal ({txn.state}). No further action.",
         }))
@@ -655,6 +669,11 @@ def _fetch_content_object(client: MoltbookClient, txn: Transaction) -> dict[str,
     # comment — try parent post, fall back to comment list
     parent_id = txn.parent_post_id
     if not parent_id:
+        # Recovery: the real comment create response carries post_id on the
+        # comment object (parent_post_id is absent).  Derive it from the
+        # stored create response so historical transactions can reconcile.
+        parent_id = _derive_parent_from_create_response(txn)
+    if not parent_id:
         raise RuntimeError("Comment transaction missing parent_post_id")
 
     # First: fetch parent post (includes comments[])
@@ -667,6 +686,26 @@ def _fetch_content_object(client: MoltbookClient, txn: Transaction) -> dict[str,
     # Second: fetch official comment list
     raw = client.fetch_comments(parent_id)
     return _parse_fetch_response(raw, txn.content_type, txn.content_id)
+
+
+def _derive_parent_from_create_response(txn: Transaction) -> str:
+    """Recover the parent post id from the stored create response.
+
+    Real Moltbook comment create responses contain ``post_id`` on the
+    comment object.  Returns ``""`` when not derivable or when the
+    stored identifiers are ambiguous — the caller fails closed.
+    """
+    raw = txn.raw_create_response
+    if not isinstance(raw, dict):
+        return ""
+    obj = raw.get(txn.content_type)
+    if not isinstance(obj, dict):
+        return ""
+    ppid = obj.get("parent_post_id", "")
+    pid = obj.get("post_id", "")
+    if ppid and pid and ppid != pid:
+        return ""  # ambiguous — fail closed
+    return ppid or pid
 
 
 # ---------------------------------------------------------------------------
