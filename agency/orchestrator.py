@@ -3,6 +3,7 @@ dynamic Director routing, and evidence lifecycle.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import time as _time
 from typing import Any
 
@@ -169,7 +170,8 @@ class AgencyOrchestrator:
                  repo_provider: RepoStateProvider | None = None,
                  role_registry: dict[str, Any] | None = None,
                  moltbook_reader: Any = None,
-                 workflow_run_id: str | None = None) -> None:
+                 workflow_run_id: str | None = None,
+                 utc_date_provider: Any | None = None) -> None:
         self.policy = AgencyPolicy(policy_config)
         self.budget = budget or AgencyBudget()
         self._repo_provider = repo_provider or RepoStateProvider()
@@ -177,6 +179,9 @@ class AgencyOrchestrator:
         self._moltbook_reader = moltbook_reader
         self._internal_handles: set[str] = set(
             (campaign or {}).get("internal_author_handles", []))
+        # Testable UTC date source for the synthesis gate.
+        self._utc_date_provider = utc_date_provider or (
+            lambda: _dt.datetime.now(_dt.timezone.utc).date())
 
         sha = base_sha
         if sha is None:
@@ -197,7 +202,7 @@ class AgencyOrchestrator:
     def run(self) -> AgencyContextV1:
         try:
             disposition = self._run_initial_phases()
-            if self.ctx.status in ("failed", "budget_exhausted"):
+            if self.ctx.status in ("failed", "budget_exhausted", "completed"):
                 return self.ctx
 
             if disposition not in DIRECTOR_ROUTES:
@@ -240,7 +245,13 @@ class AgencyOrchestrator:
             elif phase == "LOAD_AUTHORITY":
                 self.ctx.append_event(CAMPAIGN_LOADED, {"campaign": self.ctx.campaign})
             elif phase == "SCOUT":
-                self._invoke_and_apply("scout")
+                scout_result = self._invoke_and_apply("scout")
+                # Deterministic NOOP fast-path: no new external evidence.
+                # Close the run immediately; no Clerk, EA, Director, Auditor,
+                # or Planner model calls, and no NOOP route execution.
+                if scout_result.status == "NOOP":
+                    self.ctx.close("completed")
+                    return "NOOP"
             elif phase == "NORMALIZE":
                 self._invoke_and_apply("records_clerk")
             elif phase == "TRIAGE":
@@ -269,6 +280,28 @@ class AgencyOrchestrator:
             self._invoke_and_apply("engagement_lead")
         elif phase == "ENGINEERING_PLANNER":
             self._invoke_and_apply("engineering_planner")
+
+    # ------------------------------------------------------------------
+    # Synthesis gate
+    # ------------------------------------------------------------------
+
+    def _synthesis_allowed(self) -> bool:
+        """Whether READY_FOR_SYNTHESIS is permitted today.
+
+        Allowed when allow_early_synthesis is true, when no stop date is
+        configured, or when the current UTC date is on/after the stop date.
+        """
+        campaign = self.ctx.campaign
+        if campaign.get("allow_early_synthesis", False):
+            return True
+        stop_date_str = campaign.get("active_inquiry_stop_date", "")
+        if not stop_date_str:
+            return True
+        try:
+            stop_date = _dt.date.fromisoformat(stop_date_str)
+        except ValueError:
+            return True  # config validation rejects malformed values earlier
+        return self._utc_date_provider() >= stop_date
 
     # ------------------------------------------------------------------
     # Evidence Analyst source accounting
@@ -377,6 +410,13 @@ class AgencyOrchestrator:
                 f"Invalid Director disposition: '{disposition}'", severity="high")
             self.ctx.close("failed")
             return "NOOP"
+
+        # Deterministic synthesis gate: READY_FOR_SYNTHESIS before the
+        # active-inquiry stop date is downgraded to RECORD_ONLY unless
+        # allow_early_synthesis is true.  No incident — normal policy gate.
+        if disposition == "READY_FOR_SYNTHESIS" and not self._synthesis_allowed():
+            disposition = "RECORD_ONLY"
+            director_data["disposition"] = "RECORD_ONLY"
 
         synthesis = director_data.get("synthesis")
         if synthesis:

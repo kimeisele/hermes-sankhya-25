@@ -78,6 +78,17 @@ def _load_config() -> dict:
         v = budget.get(k)
         if v is None or v <= 0:
             raise ValueError(f"budget.{k} must be positive, got {v}")
+    # Synthesis gate: stop date must be a valid ISO date; allow_early_synthesis bool
+    import datetime as _dt
+    stop_date = cfg.get("active_inquiry_stop_date", "")
+    if not isinstance(stop_date, str) or not stop_date.strip():
+        raise ValueError("active_inquiry_stop_date must be a non-empty ISO date string")
+    try:
+        _dt.date.fromisoformat(stop_date)
+    except ValueError as exc:
+        raise ValueError(f"active_inquiry_stop_date must be ISO format (YYYY-MM-DD): {stop_date}") from exc
+    if not isinstance(cfg.get("allow_early_synthesis", False), bool):
+        raise ValueError("allow_early_synthesis must be a boolean")
     return cfg
 
 
@@ -141,7 +152,9 @@ def main() -> int:
         budget=budget, repo_provider=repo_provider, role_registry=role_registry,
         campaign={"active_inquiry": cfg.get("active_inquiry", ""),
                   "objective": cfg["active_inquiry_objective"],
-                  "internal_author_handles": cfg["internal_author_handles"]})
+                  "internal_author_handles": cfg["internal_author_handles"],
+                  "active_inquiry_stop_date": cfg.get("active_inquiry_stop_date", ""),
+                  "allow_early_synthesis": cfg.get("allow_early_synthesis", False)})
 
     # Load durable evidence index BEFORE execution
     from agency.evidence_index import load_evidence_index

@@ -132,6 +132,8 @@ class ScoutRole:
     def __call__(self, ctx_view: dict[str, Any]) -> RoleResult:
         inbox = ctx_view.get("inbox", [])
         known = set(ctx_view.get("known_ids", ctx_view.get("accepted_evidence_ids", [])))
+        internal_handles = set(
+            (ctx_view.get("campaign", {}) or {}).get("internal_author_handles", []))
 
         # Bounded Moltbook read if reader is available and inbox is empty
         if self._moltbook and not inbox:
@@ -141,25 +143,33 @@ class ScoutRole:
                     post = self._moltbook.fetch_post(target_id)
                     comments_resp = self._moltbook.fetch_comments(target_id)
                     items: list[dict[str, Any]] = []
-                    # Add post itself
+                    # Add post itself — skip the internal Hermes post
                     p = post.get("post", post)
-                    if isinstance(p, dict) and p.get("id"):
+                    p_author = (p.get("author", {}).get("name", "unknown")
+                                if isinstance(p, dict) and isinstance(p.get("author"), dict)
+                                else "unknown")
+                    if isinstance(p, dict) and p.get("id") and p_author not in internal_handles:
                         full_content = p.get("content", "")
                         items.append({
                             "id": p["id"], "url": f"https://www.moltbook.com/post/{p['id']}",
-                            "author_handle": p.get("author", {}).get("name", "unknown"),
+                            "author_handle": p_author,
                             "content_type": "post", "untrusted": True,
                             "content_excerpt": full_content[:500],
                             "raw_content": full_content,
                         })
-                    # Add comments
+                    # Add comments — skip internal Hermes comments
                     for c in comments_resp.get("comments", []):
                         if isinstance(c, dict) and c.get("id"):
+                            c_author = (c.get("author", {}).get("name", "unknown")
+                                        if isinstance(c.get("author"), dict)
+                                        else "unknown")
+                            if c_author in internal_handles:
+                                continue  # internal content is never a candidate
                             full_content = c.get("content", "")
                             items.append({
                                 "id": c["id"],
                                 "url": f"https://www.moltbook.com/post/{target_id}#comments",
-                                "author_handle": c.get("author", {}).get("name", "unknown"),
+                                "author_handle": c_author,
                                 "content_type": "comment", "untrusted": True,
                                 "content_excerpt": full_content[:500],
                                 "raw_content": full_content,
