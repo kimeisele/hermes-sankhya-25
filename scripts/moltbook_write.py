@@ -515,6 +515,15 @@ def cmd_verify(client: MoltbookClient, store: TransactionStore,
         # the content may be verified on Moltbook even though the local
         # bridge could not confirm it.  Never resubmits POST /verify.
         if txn.state == "indeterminate" and txn.content_type == "comment":
+            # Credential guard before any read-only reconciliation —
+            # same contract as pending/attempted: no credential → zero
+            # network calls → state unchanged.
+            if _get_token() is None:
+                print(json.dumps({
+                    "error": "No Moltbook credential. Set MOLTBOOK_TOKEN or configure ~/.config/moltbook/credentials.json",
+                    "transaction_state": txn.state,
+                }))
+                return 1
             return _reconcile_attempted(client, store, txn)
         print(json.dumps({
             "error": f"Transaction terminal ({txn.state}). No further action.",

@@ -1252,3 +1252,34 @@ def test_cmd_verify_other_terminal_states_still_rejected(tmp_path: Path) -> None
     assert m.cmd_verify(client, store, "done1", "x") == 1
     assert client.verify_calls == []
     assert client.fetch_post_calls == []
+
+
+def test_cmd_verify_indeterminate_comment_without_credential_no_network(tmp_path: Path) -> None:
+    """Indeterminate comment txn without credential → zero network, unchanged."""
+    m = _load_bridge_module()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(m, "_get_token", lambda: None)  # no credential
+
+    client = _MockClient(
+        fetch_post_resp={"success": True,
+                         "post": {"id": "parent_post_fixture_id", "comments": []}},
+        fetch_comments_resp=_load_fixture("comment_list_real_shape_verified.json"),
+    )
+    store = m.TransactionStore(tmp_path)
+    txn = m.Transaction(
+        transaction_id="nc1",
+        content_id="comment_fixture_real_shape",
+        content_type="comment",
+        parent_post_id="", url="", raw_challenge_text="",
+        verification_code="", challenge_instructions="", expires_at=0.0,
+        raw_create_response=_load_fixture("comment_create_real_shape.json"),
+        state="indeterminate",
+    )
+    store.save(txn)
+
+    assert m.cmd_verify(client, store, "nc1", "anything") == 1
+    assert client.verify_calls == []
+    assert client.fetch_post_calls == []
+    assert client.fetch_comments_calls == []
+    loaded = store.load("nc1")
+    assert loaded.state == "indeterminate"
