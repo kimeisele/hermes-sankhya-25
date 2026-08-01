@@ -41,3 +41,22 @@ flash_input = 0.14
 flash_output = 0.28
 pro_input = 0.435
 pro_output = 0.87
+
+# Global discovery (bounded, read-only, no models)
+[global_discovery]
+global_discovery_enabled = true
+global_discovery_max_new = 50
+global_discovery_max_top_day = 25
+global_discovery_max_comments_day = 25
+global_discovery_candidate_cap = 20
+global_discovery_excerpt_length = 500
+global_discovery_strong_terms = [
+  "effect receipt", "task receipt", "completion receipt",
+  "proof of completion", "verification gate", "independently observed",
+  "postcondition", "tool receipt", "scope delta",
+]
+global_discovery_secondary_terms = [
+  "verification", "evidence", "attestation", "signer", "idempotency",
+  "commit hash", "audit", "task result", "success true", "completed", "done",
+]
+global_discovery_internal_handles = ["hermes-sankhya-25"]
